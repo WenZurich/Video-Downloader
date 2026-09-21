@@ -56,6 +56,19 @@ jobs:
           '@ | Set-Content -Encoding utf8 test_ffmpeg_runtime.py
           python test_ffmpeg_runtime.py
 
+      - name: Test yt-dlp browser impersonation
+        shell: pwsh
+        run: |
+          @'
+          from yt_dlp import YoutubeDL
+          from yt_dlp.networking.impersonate import ImpersonateTarget
+
+          with YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+              assert ydl._impersonate_target_available(ImpersonateTarget()), 'No curl_cffi impersonation target is available'
+              print('Available impersonation backend: OK')
+          '@ | Set-Content -Encoding utf8 test_impersonation.py
+          python test_impersonation.py
+
       - name: Test UI at 125 percent
         shell: pwsh
         run: |
@@ -164,6 +177,8 @@ jobs:
             --version-file version_info.txt `
             --collect-all imageio_ffmpeg `
             --collect-all yt_dlp `
+            --collect-all curl_cffi `
+            --collect-all cffi `
             app.py
 
       - name: Verify EXE exists and metadata
