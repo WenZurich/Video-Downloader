@@ -21,3 +21,8 @@ The Windows executable is built on GitHub Actions using the same hardened pipeli
 The EXE bundles its own Python runtime and FFmpeg dependency. No separate Python installation is required.
 
 Only download content you are authorized to save and comply with YouTube's terms and applicable copyright law.
+
+
+## Cloudflare / browser impersonation
+
+The build includes yt-dlp's recommended `curl_cffi` impersonation backend and enables `generic:impersonate` for generic extraction. This addresses the specific "required impersonation dependency" 403 error shown by yt-dlp. It does not guarantee that every site or network will bypass every anti-bot challenge; sites that require user cookies may still need browser cookies.
