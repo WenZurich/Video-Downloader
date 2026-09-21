@@ -5,6 +5,7 @@ from pathlib import Path
 
 import imageio_ffmpeg
 import yt_dlp
+from yt_dlp.networking.impersonate import ImpersonateTarget
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
@@ -173,6 +174,11 @@ class DownloadWorker(QObject):
                 "noplaylist": True,
                 "progress_hooks": [self._hook],
                 "ffmpeg_location": ffmpeg_exe,
+                "extractor_args": {
+                    "generic": {
+                        "impersonate": [""],
+                    },
+                },
                 "retries": 10,
                 "fragment_retries": 10,
                 "continuedl": True,
@@ -454,6 +460,8 @@ def smoke_test(app: QApplication):
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
         if ydl is None:
             raise RuntimeError("yt-dlp initialization failed")
+        if not ydl._impersonate_target_available(ImpersonateTarget()):
+            raise RuntimeError("curl_cffi impersonation target is unavailable")
 
     window = MainWindow()
     window.resize(960, 690)
