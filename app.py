@@ -955,7 +955,7 @@ class MainWindow(QMainWindow):
         """Extract HTTP(S) links from clipboard/input while preserving order."""
         if not text:
             return []
-        found = re.findall(r"https?://[^\s<>\\\"']+", text, flags=re.IGNORECASE)
+        found = re.findall(r"https?://\S+", text, flags=re.IGNORECASE)
         urls = []
         for raw in found:
             url = raw.rstrip(".,;")
