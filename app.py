@@ -1008,7 +1008,11 @@ class MainWindow(QMainWindow):
         self.clear_finished_btn.setEnabled(
             any(job["status"] in ("done", "failed", "cancelled") for job in self.jobs)
         )
-        self.download_btn.setEnabled((not self.queue_running) and counts["pending"] > 0)
+        self.download_btn.setEnabled(
+            (not self.queue_running)
+            and (not self.active_jobs)
+            and counts["pending"] > 0
+        )
         self._update_overall_progress()
 
     def _update_overall_progress(self):
