@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -9,13 +10,14 @@ from yt_dlp.networking.impersonate import ImpersonateTarget
 from PySide6.QtCore import QObject, Qt, QThread, Signal, QSettings, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QSizePolicy, QSpacerItem, QVBoxLayout, QWidget
+    QAbstractItemView, QApplication, QComboBox, QFileDialog, QFrame,
+    QHeaderView, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QProgressBar, QPushButton, QSizePolicy, QSpacerItem, QTreeWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget
 )
 
 APP_NAME = "Video Downloader"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 ORG_NAME = "WenZurich"
 
 # ---------------------------------------------------------------------------
@@ -31,7 +33,36 @@ TRANSLATIONS = {
         "subtitle": "貼上任何網址，下載成 MP4",
         "link_section": "影片連結",
         "url_placeholder": "貼上影片網址，支援 YouTube、Vimeo、X、TikTok 等上千個網站",
-        "paste": "貼上",
+        "paste": "貼上並加入",
+        "add_queue": "加入佇列",
+        "queue": "下載佇列",
+        "queue_hint": "可持續加入網址；預設依序下載",
+        "queue_count": "{count} 個項目",
+        "queue_status": "狀態",
+        "queue_item": "項目",
+        "queue_progress": "進度",
+        "remove_selected": "移除選取",
+        "clear_finished": "清除已結束",
+        "concurrency": "同時下載",
+        "concurrency_1": "1（依序）",
+        "concurrency_2": "2",
+        "concurrency_3": "3",
+        "status_pending": "等待中",
+        "status_active": "下載中",
+        "status_done": "完成",
+        "status_failed": "失敗",
+        "status_cancelled": "已停止",
+        "start_queue": "開始下載",
+        "queue_running": "下載中 {active} · 等待 {pending}",
+        "queue_running_detail": "可繼續貼上網址，新項目會自動排入佇列",
+        "queue_complete": "佇列完成",
+        "queue_complete_detail": "完成 {done} · 失敗 {failed}",
+        "queue_stopped": "佇列已停止",
+        "queue_stopped_detail": "仍有 {pending} 個項目保留，可再次開始",
+        "added_urls": "已加入 {added} 個網址",
+        "skipped_duplicates": "略過 {skipped} 個重複網址",
+        "warn_no_queue_title": "沒有下載項目",
+        "warn_no_queue": "請先加入至少一個網址。",
         "quality": "畫質",
         "output_format": "輸出格式",
         "playlist": "播放清單",
@@ -83,7 +114,36 @@ TRANSLATIONS = {
         "subtitle": "Paste any link, download as MP4",
         "link_section": "Video link",
         "url_placeholder": "Paste a video URL — works with YouTube, Vimeo, X, TikTok and thousands more",
-        "paste": "Paste",
+        "paste": "Paste & add",
+        "add_queue": "Add to queue",
+        "queue": "Download queue",
+        "queue_hint": "Keep adding links; downloads run sequentially by default",
+        "queue_count": "{count} items",
+        "queue_status": "Status",
+        "queue_item": "Item",
+        "queue_progress": "Progress",
+        "remove_selected": "Remove selected",
+        "clear_finished": "Clear finished",
+        "concurrency": "Concurrent",
+        "concurrency_1": "1 (sequential)",
+        "concurrency_2": "2",
+        "concurrency_3": "3",
+        "status_pending": "Waiting",
+        "status_active": "Downloading",
+        "status_done": "Done",
+        "status_failed": "Failed",
+        "status_cancelled": "Stopped",
+        "start_queue": "Start downloads",
+        "queue_running": "Downloading {active} · {pending} waiting",
+        "queue_running_detail": "Keep pasting links; new items join the queue automatically",
+        "queue_complete": "Queue complete",
+        "queue_complete_detail": "{done} done · {failed} failed",
+        "queue_stopped": "Queue stopped",
+        "queue_stopped_detail": "{pending} items remain queued; start again to resume",
+        "added_urls": "Added {added} links",
+        "skipped_duplicates": "Skipped {skipped} duplicate links",
+        "warn_no_queue_title": "Nothing to download",
+        "warn_no_queue": "Add at least one link to the queue first.",
         "quality": "Quality",
         "output_format": "Format",
         "playlist": "Playlist",
@@ -268,6 +328,30 @@ QComboBox QAbstractItemView {{
     outline: none;
     selection-background-color: {p['accent']};
     selection-color: {p['accent_text']};
+}}
+QTreeWidget {{
+    background: {p['field']};
+    color: {p['text']};
+    border: 1px solid {p['border_strong']};
+    border-radius: 12px;
+    outline: none;
+}}
+QTreeWidget::item {{
+    min-height: 34px;
+    padding: 3px 6px;
+    border-bottom: 1px solid {p['border']};
+}}
+QTreeWidget::item:selected {{
+    background: {p['secondary']};
+    color: {p['text']};
+}}
+QHeaderView::section {{
+    background: {p['surface_2']};
+    color: {p['text_muted']};
+    border: none;
+    border-bottom: 1px solid {p['border']};
+    padding: 8px 7px;
+    font-weight: 600;
 }}
 QPushButton {{
     border: none;
@@ -502,6 +586,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.thread = None
         self.worker = None
+        self.jobs = []
+        self.active_jobs = {}
+        self.next_job_id = 1
+        self.queue_running = False
+        self.stop_requested = False
+        self.run_config = None
         self.settings = settings or QSettings(ORG_NAME, APP_NAME)
 
         lang = self.settings.value("language", "zh_TW")
@@ -509,8 +599,8 @@ class MainWindow(QMainWindow):
         self.i18n = I18n(lang)
 
         self.setWindowTitle(APP_NAME)
-        self.resize(960, 720)
-        self.setMinimumSize(820, 660)
+        self.resize(1040, 840)
+        self.setMinimumSize(880, 720)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -562,13 +652,79 @@ class MainWindow(QMainWindow):
         url_row.setSpacing(10)
         self.url_edit = QLineEdit()
         self.url_edit.setClearButtonEnabled(True)
+        self.url_edit.returnPressed.connect(self.add_input_to_queue)
+
+        self.add_btn = QPushButton()
+        self.add_btn.setObjectName("Secondary")
+        self.add_btn.setMinimumWidth(108)
+        self.add_btn.clicked.connect(self.add_input_to_queue)
+
         self.paste_btn = QPushButton()
         self.paste_btn.setObjectName("Secondary")
-        self.paste_btn.setFixedWidth(96)
+        self.paste_btn.setMinimumWidth(126)
         self.paste_btn.clicked.connect(self.paste_url)
+
         url_row.addWidget(self.url_edit, 1)
+        url_row.addWidget(self.add_btn)
         url_row.addWidget(self.paste_btn)
         card_layout.addLayout(url_row)
+
+        # Download queue
+        queue_head = QHBoxLayout()
+        queue_head.setSpacing(10)
+        self.queue_label = self._section_label()
+        self.queue_hint_label = QLabel()
+        self.queue_hint_label.setObjectName("Faint")
+        self.queue_count_label = QLabel()
+        self.queue_count_label.setObjectName("Muted")
+
+        queue_head.addWidget(self.queue_label)
+        queue_head.addWidget(self.queue_hint_label)
+        queue_head.addStretch(1)
+        queue_head.addWidget(self.queue_count_label)
+        card_layout.addLayout(queue_head)
+
+        self.queue_tree = QTreeWidget()
+        self.queue_tree.setColumnCount(3)
+        self.queue_tree.setRootIsDecorated(False)
+        self.queue_tree.setUniformRowHeights(True)
+        self.queue_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.queue_tree.setMinimumHeight(160)
+        self.queue_tree.setMaximumHeight(210)
+        self.queue_tree.itemSelectionChanged.connect(self._refresh_queue_controls)
+        header = self.queue_tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        card_layout.addWidget(self.queue_tree)
+
+        queue_actions = QHBoxLayout()
+        queue_actions.setSpacing(8)
+        self.remove_btn = QPushButton()
+        self.remove_btn.setObjectName("Ghost")
+        self.remove_btn.clicked.connect(self.remove_selected_jobs)
+        self.clear_finished_btn = QPushButton()
+        self.clear_finished_btn.setObjectName("Ghost")
+        self.clear_finished_btn.clicked.connect(self.clear_finished_jobs)
+
+        self.concurrency_label = QLabel()
+        self.concurrency_label.setObjectName("Muted")
+        self.concurrency_combo = QComboBox()
+        self.concurrency_combo.setObjectName("Toolbar")
+        self.concurrency_combo.setFixedWidth(132)
+        for value in (1, 2, 3):
+            self.concurrency_combo.addItem("", value)
+        saved_concurrency = int(self.settings.value("concurrency", 1) or 1)
+        saved_concurrency = saved_concurrency if saved_concurrency in (1, 2, 3) else 1
+        self.concurrency_combo.setCurrentIndex(saved_concurrency - 1)
+        self.concurrency_combo.currentIndexChanged.connect(self.on_concurrency_changed)
+
+        queue_actions.addWidget(self.remove_btn)
+        queue_actions.addWidget(self.clear_finished_btn)
+        queue_actions.addStretch(1)
+        queue_actions.addWidget(self.concurrency_label)
+        queue_actions.addWidget(self.concurrency_combo)
+        card_layout.addLayout(queue_actions)
 
         # Quality / format / playlist row
         options = QHBoxLayout()
@@ -653,7 +809,7 @@ class MainWindow(QMainWindow):
         self.cancel_btn.clicked.connect(self.cancel_download)
         self.download_btn = QPushButton()
         self.download_btn.setObjectName("Primary")
-        self.download_btn.setFixedWidth(160)
+        self.download_btn.setMinimumWidth(170)
         self.download_btn.clicked.connect(self.start_download)
         action_row.addWidget(self.open_btn)
         action_row.addWidget(self.cancel_btn)
@@ -704,7 +860,23 @@ class MainWindow(QMainWindow):
         self.subtitle.setText(tr("subtitle"))
         self.link_label.setText(tr("link_section"))
         self.url_edit.setPlaceholderText(tr("url_placeholder"))
+        self.add_btn.setText(tr("add_queue"))
         self.paste_btn.setText(tr("paste"))
+        self.queue_label.setText(tr("queue"))
+        self.queue_hint_label.setText(tr("queue_hint"))
+        self.remove_btn.setText(tr("remove_selected"))
+        self.clear_finished_btn.setText(tr("clear_finished"))
+        self.concurrency_label.setText(tr("concurrency"))
+        self.concurrency_combo.blockSignals(True)
+        for index, key in enumerate(("concurrency_1", "concurrency_2", "concurrency_3")):
+            self.concurrency_combo.setItemText(index, tr(key))
+        self.concurrency_combo.blockSignals(False)
+        self.queue_tree.setHeaderLabels(
+            [tr("queue_status"), tr("queue_item"), tr("queue_progress")]
+        )
+        for job in self.jobs:
+            self._render_job(job)
+        self._refresh_queue_controls()
         self.quality_label.setText(tr("quality"))
         self.format_label.setText(tr("output_format"))
         self.playlist_label.setText(tr("playlist"))
@@ -712,7 +884,7 @@ class MainWindow(QMainWindow):
         self.browse_btn.setText(tr("choose_folder"))
         self.open_btn.setText(tr("open_folder"))
         self.cancel_btn.setText(tr("cancel"))
-        self.download_btn.setText(tr("download"))
+        self.download_btn.setText(tr("start_queue"))
         self.note.setText(tr("note"))
 
         # Quality combo — preserve selection by index.
@@ -740,10 +912,20 @@ class MainWindow(QMainWindow):
         self.theme_combo.setItemText(2, tr("theme_dark"))
         self.theme_combo.blockSignals(False)
 
-        # Only reset status text if idle.
-        if not self.cancel_btn.isEnabled():
-            self.status_label.setText(tr("ready"))
-            self.detail_label.setText(tr("ready_detail"))
+        # Only reset status text if idle and no completed queue summary is showing.
+        if not self.queue_running and not self.active_jobs:
+            counts = self._queue_counts()
+            if counts["pending"]:
+                self.status_label.setText(tr("ready"))
+                self.detail_label.setText(tr("queue_stopped_detail", pending=counts["pending"]))
+            elif counts["done"] or counts["failed"]:
+                self.status_label.setText(tr("queue_complete"))
+                self.detail_label.setText(
+                    tr("queue_complete_detail", done=counts["done"], failed=counts["failed"])
+                )
+            else:
+                self.status_label.setText(tr("ready"))
+                self.detail_label.setText(tr("ready_detail"))
 
     def apply_theme(self):
         key = resolve_theme(self.theme_mode)
@@ -764,13 +946,163 @@ class MainWindow(QMainWindow):
         self.settings.setValue("language", code)
         self.retranslate()
 
+    def on_concurrency_changed(self, index):
+        value = int(self.concurrency_combo.itemData(index) or 1)
+        self.settings.setValue("concurrency", value)
+
     # ---- actions ----
+    def _extract_urls(self, text):
+        """Extract HTTP(S) links from clipboard/input while preserving order."""
+        if not text:
+            return []
+        found = re.findall(r"https?://\S+", text, flags=re.IGNORECASE)
+        urls = []
+        for raw in found:
+            url = raw.rstrip(".,;")
+            if url:
+                urls.append(url)
+        return urls
+
+    def _status_text(self, status):
+        return self.i18n.tr({
+            "pending": "status_pending",
+            "active": "status_active",
+            "done": "status_done",
+            "failed": "status_failed",
+            "cancelled": "status_cancelled",
+        }.get(status, "status_pending"))
+
+    def _render_job(self, job):
+        item = job["item"]
+        item.setText(0, self._status_text(job["status"]))
+        item.setText(1, job["url"])
+        pct = job.get("pct", 0.0)
+        if job["status"] == "done":
+            item.setText(2, "100%")
+        elif job["status"] == "failed":
+            item.setText(2, "—")
+        else:
+            item.setText(2, f"{pct:.0f}%")
+        item.setToolTip(1, job["url"])
+        if job.get("error"):
+            item.setToolTip(0, job["error"])
+
+    def _queue_counts(self):
+        counts = {"pending": 0, "active": 0, "done": 0, "failed": 0, "cancelled": 0}
+        for job in self.jobs:
+            counts[job["status"]] = counts.get(job["status"], 0) + 1
+        return counts
+
+    def _find_job(self, job_id):
+        return next((job for job in self.jobs if job["id"] == job_id), None)
+
+    def _refresh_queue_controls(self):
+        counts = self._queue_counts()
+        self.queue_count_label.setText(self.i18n.tr("queue_count", count=len(self.jobs)))
+        removable = any(
+            self._find_job(item.data(0, Qt.UserRole)) is not None
+            and self._find_job(item.data(0, Qt.UserRole))["status"] != "active"
+            for item in self.queue_tree.selectedItems()
+        )
+        self.remove_btn.setEnabled(removable)
+        self.clear_finished_btn.setEnabled(
+            any(job["status"] in ("done", "failed", "cancelled") for job in self.jobs)
+        )
+        self.download_btn.setEnabled(
+            (not self.queue_running)
+            and (not self.active_jobs)
+            and counts["pending"] > 0
+        )
+        self._update_overall_progress()
+
+    def _update_overall_progress(self):
+        if not self.jobs:
+            self.progress.setValue(0)
+            return
+        total = 0.0
+        for job in self.jobs:
+            if job["status"] in ("done", "failed"):
+                total += 100.0
+            else:
+                total += float(job.get("pct", 0.0))
+        self.progress.setValue(int((total / len(self.jobs)) * 10))
+
+    def add_urls(self, text):
+        urls = self._extract_urls(text)
+        existing = {
+            job["url"] for job in self.jobs if job["status"] in ("pending", "active")
+        }
+        added = 0
+        skipped = 0
+        for url in urls:
+            if url in existing:
+                skipped += 1
+                continue
+            job_id = self.next_job_id
+            self.next_job_id += 1
+            item = QTreeWidgetItem()
+            item.setData(0, Qt.UserRole, job_id)
+            job = {
+                "id": job_id,
+                "url": url,
+                "status": "pending",
+                "pct": 0.0,
+                "title": "",
+                "error": "",
+                "item": item,
+            }
+            self.jobs.append(job)
+            self.queue_tree.addTopLevelItem(item)
+            self._render_job(job)
+            existing.add(url)
+            added += 1
+
+        if added:
+            self.url_edit.clear()
+            self.url_edit.setFocus()
+            self.status_label.setText(self.i18n.tr("ready"))
+            detail = self.i18n.tr("added_urls", added=added)
+            if skipped:
+                detail += " · " + self.i18n.tr("skipped_duplicates", skipped=skipped)
+            self.detail_label.setText(detail)
+        elif skipped:
+            self.detail_label.setText(self.i18n.tr("skipped_duplicates", skipped=skipped))
+
+        self._refresh_queue_controls()
+        if self.queue_running:
+            self._pump_queue()
+        return added, skipped
+
+    def add_input_to_queue(self):
+        text = self.url_edit.text().strip()
+        if text:
+            self.add_urls(text)
+
     def paste_url(self):
         text = QApplication.clipboard().text().strip()
         if text:
-            self.url_edit.setText(text)
-            self.url_edit.setFocus()
-            self.url_edit.setCursorPosition(len(text))
+            self.add_urls(text)
+
+    def remove_selected_jobs(self):
+        selected_ids = {item.data(0, Qt.UserRole) for item in self.queue_tree.selectedItems()}
+        for job in list(self.jobs):
+            if job["id"] not in selected_ids or job["status"] == "active":
+                continue
+            index = self.queue_tree.indexOfTopLevelItem(job["item"])
+            if index >= 0:
+                self.queue_tree.takeTopLevelItem(index)
+            self.jobs.remove(job)
+        self._refresh_queue_controls()
+
+    def clear_finished_jobs(self):
+        for job in list(self.jobs):
+            if job["status"] not in ("done", "failed", "cancelled"):
+                continue
+            index = self.queue_tree.indexOfTopLevelItem(job["item"])
+            if index >= 0:
+                self.queue_tree.takeTopLevelItem(index)
+            self.jobs.remove(job)
+        self._refresh_queue_controls()
 
     def choose_folder(self):
         current = self.path_edit.text().strip() or str(Path.home())
@@ -789,23 +1121,29 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def set_busy(self, busy):
-        self.download_btn.setEnabled(not busy)
         self.cancel_btn.setEnabled(busy)
         self.quality_combo.setEnabled(not busy)
         self.playlist_combo.setEnabled(not busy)
-        self.url_edit.setEnabled(not busy)
-        self.paste_btn.setEnabled(not busy)
         self.path_edit.setEnabled(not busy)
         self.browse_btn.setEnabled(not busy)
-        self.lang_combo.setEnabled(not busy)
+        self.concurrency_combo.setEnabled(not busy)
+        # URL input stays live while downloading so new links can join the queue.
+        self.url_edit.setEnabled(True)
+        self.add_btn.setEnabled(True)
+        self.paste_btn.setEnabled(True)
+        self._refresh_queue_controls()
 
     def start_download(self):
-        url = self.url_edit.text().strip()
+        # One-click compatibility: text still in the input is queued first.
+        if self.url_edit.text().strip():
+            self.add_input_to_queue()
+
         folder = self.path_edit.text().strip()
         tr = self.i18n.tr
+        counts = self._queue_counts()
 
-        if not url:
-            QMessageBox.warning(self, tr("warn_no_url_title"), tr("warn_no_url"))
+        if not counts["pending"]:
+            QMessageBox.warning(self, tr("warn_no_queue_title"), tr("warn_no_queue"))
             return
         if not folder:
             QMessageBox.warning(self, tr("warn_no_folder_title"), tr("warn_no_folder"))
@@ -813,78 +1151,174 @@ class MainWindow(QMainWindow):
 
         Path(folder).mkdir(parents=True, exist_ok=True)
         self.settings.setValue("folder", folder)
-        self.progress.setValue(0)
+        self.run_config = {
+            "folder": folder,
+            "quality": self.quality_combo.currentText(),
+            "playlist": self.playlist_combo.currentIndex() == 1,
+            "concurrency": int(self.concurrency_combo.currentData() or 1),
+        }
+        self.stop_requested = False
+        self.queue_running = True
         self.status_label.setText(tr("resolving"))
-        self.detail_label.setText(tr("resolving_detail"))
+        self.detail_label.setText(tr("queue_running_detail"))
         self.set_busy(True)
+        self._pump_queue()
 
-        playlist = self.playlist_combo.currentIndex() == 1
+    def _pump_queue(self):
+        if not self.queue_running or not self.run_config:
+            return
+        limit = self.run_config["concurrency"]
+        while len(self.active_jobs) < limit:
+            job = next((j for j in self.jobs if j["status"] == "pending"), None)
+            if not job:
+                break
+            self._start_job(job)
 
-        self.thread = QThread(self)
-        self.worker = DownloadWorker(
-            url, folder, self.quality_combo.currentText(), playlist, self.i18n
+        counts = self._queue_counts()
+        if self.active_jobs:
+            self.status_label.setText(
+                self.i18n.tr(
+                    "queue_running",
+                    active=len(self.active_jobs),
+                    pending=counts["pending"],
+                )
+            )
+            self.detail_label.setText(self.i18n.tr("queue_running_detail"))
+        elif counts["pending"] == 0:
+            self._finish_queue()
+
+    def _start_job(self, job):
+        job["status"] = "active"
+        job["pct"] = 0.0
+        job["error"] = ""
+        self._render_job(job)
+
+        thread = QThread(self)
+        worker = DownloadWorker(
+            job["url"],
+            self.run_config["folder"],
+            self.run_config["quality"],
+            self.run_config["playlist"],
+            self.i18n,
         )
-        self.worker.moveToThread(self.thread)
+        worker.moveToThread(thread)
+        job_id = job["id"]
 
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self.on_progress)
-        self.worker.finished.connect(self.on_finished)
-        self.worker.failed.connect(self.on_failed)
-        self.worker.cancelled.connect(self.on_cancelled)
+        thread.started.connect(worker.run)
+        worker.progress.connect(
+            lambda pct, title, detail, jid=job_id:
+                self.on_job_progress(jid, pct, title, detail)
+        )
+        worker.finished.connect(
+            lambda title, jid=job_id: self.on_job_finished(jid, title)
+        )
+        worker.failed.connect(
+            lambda payload, jid=job_id: self.on_job_failed(jid, payload)
+        )
+        worker.cancelled.connect(
+            lambda jid=job_id: self.on_job_cancelled(jid)
+        )
 
-        for signal in (self.worker.finished, self.worker.failed, self.worker.cancelled):
-            signal.connect(self.thread.quit)
+        for signal in (worker.finished, worker.failed, worker.cancelled):
+            signal.connect(thread.quit)
+            signal.connect(worker.deleteLater)
 
-        self.thread.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(self._clear_worker_refs)
-        self.thread.start()
+        thread.finished.connect(
+            lambda jid=job_id: self._on_job_thread_finished(jid)
+        )
+        thread.finished.connect(thread.deleteLater)
+        self.active_jobs[job_id] = {"thread": thread, "worker": worker}
+        thread.start()
+        self._refresh_queue_controls()
 
-    def _clear_worker_refs(self):
-        self.worker = None
-        self.thread = None
+    def _on_job_thread_finished(self, job_id):
+        self.active_jobs.pop(job_id, None)
+        if self.queue_running:
+            self._pump_queue()
+        elif not self.active_jobs:
+            self.set_busy(False)
+            counts = self._queue_counts()
+            self.status_label.setText(self.i18n.tr("queue_stopped"))
+            self.detail_label.setText(
+                self.i18n.tr("queue_stopped_detail", pending=counts["pending"])
+            )
 
     def cancel_download(self):
-        if self.worker:
-            self.worker.cancel()
-            self.status_label.setText(self.i18n.tr("cancelling"))
-            self.detail_label.setText(self.i18n.tr("cancelling_detail"))
+        if not self.active_jobs:
+            return
+        self.queue_running = False
+        self.stop_requested = True
+        self.status_label.setText(self.i18n.tr("cancelling"))
+        self.detail_label.setText(self.i18n.tr("cancelling_detail"))
+        for entry in list(self.active_jobs.values()):
+            entry["worker"].cancel()
 
-    def on_progress(self, pct, title, detail):
-        self.progress.setValue(int(max(0.0, min(100.0, pct)) * 10))
+    def on_job_progress(self, job_id, pct, title, detail):
+        job = self._find_job(job_id)
+        if not job:
+            return
+        job["pct"] = max(0.0, min(100.0, pct))
+        self._render_job(job)
         self.status_label.setText(title)
         self.detail_label.setText(detail)
+        self._update_overall_progress()
 
-    def on_finished(self, title):
-        tr = self.i18n.tr
-        self.progress.setValue(1000)
-        self.status_label.setText(tr("done"))
+    def on_job_finished(self, job_id, title):
+        job = self._find_job(job_id)
+        if not job:
+            return
+        job["status"] = "done"
+        job["pct"] = 100.0
+        job["title"] = title
+        self._render_job(job)
+        self.status_label.setText(self.i18n.tr("done"))
         self.detail_label.setText(title)
-        self.set_busy(False)
-        QMessageBox.information(
-            self, tr("done_dialog_title"),
-            f"{title}\n\n{tr('done_saved_to')}\n{self.path_edit.text()}"
-        )
+        self._refresh_queue_controls()
 
-    def on_failed(self, payload):
-        tr = self.i18n.tr
-        # payload is "err_key|raw message"
+    def on_job_failed(self, job_id, payload):
+        job = self._find_job(job_id)
+        if not job:
+            return
         if "|" in payload:
             key, raw = payload.split("|", 1)
         else:
             key, raw = "err_generic", payload
-        self.status_label.setText(tr("failed"))
-        self.detail_label.setText(tr("failed_detail"))
-        self.set_busy(False)
-        friendly = tr(key)
-        QMessageBox.critical(self, tr("failed"), f"{friendly}\n\n{raw}")
+        job["status"] = "failed"
+        job["pct"] = 100.0
+        job["error"] = self.i18n.tr(key) + "\n" + raw
+        self._render_job(job)
+        self.status_label.setText(self.i18n.tr("failed"))
+        self.detail_label.setText(self.i18n.tr(key))
+        self._refresh_queue_controls()
 
-    def on_cancelled(self):
-        tr = self.i18n.tr
-        self.progress.setValue(0)
-        self.status_label.setText(tr("cancelled"))
-        self.detail_label.setText(tr("cancelled_detail"))
+    def on_job_cancelled(self, job_id):
+        job = self._find_job(job_id)
+        if not job:
+            return
+        # Stopping the queue is resumable: cancelled active items return to pending.
+        if self.stop_requested:
+            job["status"] = "pending"
+            job["pct"] = 0.0
+        else:
+            job["status"] = "cancelled"
+        self._render_job(job)
+        self._refresh_queue_controls()
+
+    def _finish_queue(self):
+        self.queue_running = False
+        self.stop_requested = False
+        self.run_config = None
         self.set_busy(False)
+        counts = self._queue_counts()
+        self.progress.setValue(1000 if self.jobs else 0)
+        self.status_label.setText(self.i18n.tr("queue_complete"))
+        self.detail_label.setText(
+            self.i18n.tr(
+                "queue_complete_detail",
+                done=counts["done"],
+                failed=counts["failed"],
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -906,7 +1340,7 @@ def smoke_test(app):
     settings = QSettings(ORG_NAME, APP_NAME + "-SmokeTest")
     settings.clear()
     window = MainWindow(settings=settings)
-    window.resize(960, 720)
+    window.resize(1040, 840)
 
     for mode in ("system", "light", "dark"):
         window.theme_mode = mode
@@ -927,8 +1361,28 @@ def smoke_test(app):
     assert window.download_btn.height() >= 42
     assert window.quality_combo.height() >= 42
     assert window.playlist_combo.height() >= 42
-    assert window.width() >= 820
-    assert window.height() >= 660
+    assert window.queue_tree.minimumHeight() >= 160
+    assert window.concurrency_combo.count() == 3
+    assert window.width() >= 880
+    assert window.height() >= 720
+
+    # Queue UX regression: multi-paste preserves order, skips active/pending duplicates,
+    # and removing a selected waiting item never touches another entry.
+    added, skipped = window.add_urls(
+        "https://example.com/video-a\n"
+        "https://example.com/video-b\n"
+        "https://example.com/video-a"
+    )
+    assert added == 2 and skipped == 1
+    assert [j["url"] for j in window.jobs] == [
+        "https://example.com/video-a",
+        "https://example.com/video-b",
+    ]
+    assert all(j["status"] == "pending" for j in window.jobs)
+    window.queue_tree.setCurrentItem(window.jobs[0]["item"])
+    window.remove_selected_jobs()
+    assert len(window.jobs) == 1
+    assert window.jobs[0]["url"] == "https://example.com/video-b"
 
     window.close()
     settings.clear()
