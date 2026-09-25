@@ -3,7 +3,7 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'feature/**']
     paths:
       - 'app.py'
       - 'requirements.txt'
@@ -14,7 +14,7 @@ permissions:
 
 env:
   APP_NAME: "Video Downloader"
-  APP_VERSION: "2.0.0"
+  APP_VERSION: "2.1.0"
 
 jobs:
   build-windows:
@@ -109,6 +109,73 @@ jobs:
           '@ | Set-Content -Encoding utf8 test_theme_lang.py
           python test_theme_lang.py
 
+      - name: Test download queue scheduler
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          @'
+          import importlib.util
+          from PySide6.QtWidgets import QApplication
+          from PySide6.QtCore import QSettings
+
+          spec = importlib.util.spec_from_file_location('appmod', 'app.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          app = QApplication.instance() or QApplication([])
+          s = QSettings('WenZurich', 'ci-queue-scheduler')
+          s.clear()
+          w = mod.MainWindow(settings=s)
+
+          assert int(w.concurrency_combo.currentData()) == 1
+          added, skipped = w.add_urls(
+              'https://example.com/a\n'
+              'https://example.com/b\n'
+              'https://example.com/c\n'
+              'https://example.com/a'
+          )
+          assert (added, skipped) == (3, 1)
+          assert [j['url'] for j in w.jobs] == [
+              'https://example.com/a',
+              'https://example.com/b',
+              'https://example.com/c',
+          ]
+
+          # Exercise scheduler logic without making network requests.
+          w.run_config = {
+              'folder': '.',
+              'quality': 'Best quality',
+              'playlist': False,
+              'concurrency': 2,
+          }
+          w.queue_running = True
+
+          def fake_start(job):
+              job['status'] = 'active'
+              w.active_jobs[job['id']] = {'thread': None, 'worker': None}
+
+          w._start_job = fake_start
+          w._pump_queue()
+          assert len(w.active_jobs) == 2
+          assert sum(j['status'] == 'pending' for j in w.jobs) == 1
+
+          finished_id = next(iter(w.active_jobs))
+          finished = w._find_job(finished_id)
+          finished['status'] = 'done'
+          finished['pct'] = 100.0
+          w._on_job_thread_finished(finished_id)
+          assert len(w.active_jobs) == 2
+          assert sum(j['status'] == 'pending' for j in w.jobs) == 0
+          assert sum(j['status'] == 'done' for j in w.jobs) == 1
+
+          w.active_jobs.clear()
+          w.queue_running = False
+          w.close()
+          s.clear()
+          print('Queue scheduler OK: ordered queue, dedupe, sequential default, concurrency cap')
+          '@ | Set-Content -Encoding utf8 test_queue_scheduler.py
+          python test_queue_scheduler.py
+
       - name: Test UI at 125 percent
         shell: pwsh
         run: |
@@ -139,13 +206,15 @@ jobs:
               w = mod.MainWindow(settings=s)
               w.theme_mode = theme
               w.apply_theme()
-              w.resize(960, 720)
+              w.resize(1040, 840)
               w.show()
               app.processEvents(); app.processEvents()
               assert w.url_edit.height() >= 42
               assert w.path_edit.height() >= 42
               assert w.download_btn.height() >= 42
               assert w.quality_combo.height() >= 42
+              assert w.queue_tree.minimumHeight() >= 160
+              assert w.concurrency_combo.count() == 3
               pix = QPixmap(w.size())
               w.render(pix)
               assert pix.save(fname)
@@ -198,18 +267,18 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(2,0,0,0), prodvers=(2,0,0,0), mask=0x3f,
+              filevers=(2,1,0,0), prodvers=(2,1,0,0), mask=0x3f,
               flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)
             ),
             kids=[
               StringFileInfo([StringTable(u'040904B0', [
                 StringStruct(u'CompanyName', u'WenZurich'),
                 StringStruct(u'FileDescription', u'Video Downloader'),
-                StringStruct(u'FileVersion', u'2.0.0'),
+                StringStruct(u'FileVersion', u'2.1.0'),
                 StringStruct(u'InternalName', u'Video Downloader'),
                 StringStruct(u'OriginalFilename', u'Video Downloader.exe'),
                 StringStruct(u'ProductName', u'Video Downloader'),
-                StringStruct(u'ProductVersion', u'2.0.0')
+                StringStruct(u'ProductVersion', u'2.1.0')
               ])]),
               VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
             ]
@@ -262,7 +331,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: Video-Downloader-Windows-x64-v2.0.0
+          name: Video-Downloader-Windows-x64-v2.1.0
           path: |
             dist/Video Downloader.exe
             dist/SHA256.txt
