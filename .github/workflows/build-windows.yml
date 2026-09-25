@@ -159,6 +159,13 @@ jobs:
           assert len(w.active_jobs) == 2
           assert sum(j['status'] == 'pending' for j in w.jobs) == 1
 
+          # A stop in progress must not allow a second queue run to start
+          # before the active workers have actually exited.
+          w.queue_running = False
+          w._refresh_queue_controls()
+          assert not w.download_btn.isEnabled()
+          w.queue_running = True
+
           finished_id = next(iter(w.active_jobs))
           finished = w._find_job(finished_id)
           finished['status'] = 'done'
