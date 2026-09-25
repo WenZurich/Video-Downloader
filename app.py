@@ -959,7 +959,7 @@ class MainWindow(QMainWindow):
         urls = []
         for raw in found:
             url = raw.rstrip(".,;")
-            if url and url not in urls:
+            if url:
                 urls.append(url)
         return urls
 
