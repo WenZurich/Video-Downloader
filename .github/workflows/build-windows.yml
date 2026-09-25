@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+env:
+  APP_NAME: "Video Downloader"
+  APP_VERSION: "2.0.0"
+
 jobs:
   build-windows:
     name: Windows x64
@@ -65,9 +69,45 @@ jobs:
 
           with YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
               assert ydl._impersonate_target_available(ImpersonateTarget()), 'No curl_cffi impersonation target is available'
-              print('Available impersonation backend: OK')
+              # Verify the specific Chrome fingerprint the app requests is available.
+              assert ydl._impersonate_target_available(ImpersonateTarget('chrome')), 'Chrome impersonation target unavailable'
+              print('Available impersonation backend: OK (chrome)')
           '@ | Set-Content -Encoding utf8 test_impersonation.py
           python test_impersonation.py
+
+      - name: Test themes and languages render
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          @'
+          import importlib.util
+          from PySide6.QtWidgets import QApplication
+          from PySide6.QtCore import QSettings
+
+          spec = importlib.util.spec_from_file_location('appmod', 'app.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          app = QApplication.instance() or QApplication([])
+          s = QSettings('WenZurich', 'ci-theme-lang-test')
+          s.clear()
+          w = mod.MainWindow(settings=s)
+
+          for mode in ('system', 'light', 'dark'):
+              w.theme_mode = mode
+              w.apply_theme()
+              app.processEvents()
+          for code in mod.LANG_ORDER:
+              w.i18n.set_language(code)
+              w.retranslate()
+              app.processEvents()
+              assert w.title.text(), 'Title empty for language ' + code
+
+          w.close()
+          s.clear()
+          print('Themes and languages render OK')
+          '@ | Set-Content -Encoding utf8 test_theme_lang.py
+          python test_theme_lang.py
 
       - name: Test UI at 125 percent
         shell: pwsh
@@ -85,30 +125,35 @@ jobs:
           import importlib.util
           from PySide6.QtWidgets import QApplication
           from PySide6.QtGui import QPixmap
+          from PySide6.QtCore import QSettings
 
           spec = importlib.util.spec_from_file_location('appmod', 'app.py')
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
 
           app = QApplication.instance() or QApplication([])
-          w = mod.MainWindow()
-          w.theme_mode = 'light'
-          w.apply_theme()
-          w.resize(960, 690)
-          w.show()
-          app.processEvents()
-          app.processEvents()
 
-          assert w.url_edit.height() >= 42
-          assert w.path_edit.height() >= 42
-          assert w.download_btn.height() >= 42
-          assert w.quality_combo.height() >= 42
+          def shot(theme, fname):
+              s = QSettings('WenZurich', 'ci-preview-' + theme)
+              s.clear()
+              w = mod.MainWindow(settings=s)
+              w.theme_mode = theme
+              w.apply_theme()
+              w.resize(960, 720)
+              w.show()
+              app.processEvents(); app.processEvents()
+              assert w.url_edit.height() >= 42
+              assert w.path_edit.height() >= 42
+              assert w.download_btn.height() >= 42
+              assert w.quality_combo.height() >= 42
+              pix = QPixmap(w.size())
+              w.render(pix)
+              assert pix.save(fname)
+              w.close(); s.clear()
 
-          pix = QPixmap(w.size())
-          w.render(pix)
-          assert pix.save('ui-preview-150pct.png')
-          print('150% UI geometry OK')
-          w.close()
+          shot('light', 'ui-preview-light-150pct.png')
+          shot('dark', 'ui-preview-dark-150pct.png')
+          print('150% UI geometry OK (light + dark)')
           '@ | Set-Content -Encoding utf8 test_ui_preview.py
           python test_ui_preview.py
 
@@ -122,8 +167,10 @@ jobs:
       - name: Upload UI preview
         uses: actions/upload-artifact@v4
         with:
-          name: YouTube-MP4-Downloader-UI-preview
-          path: ui-preview-150pct.png
+          name: Video-Downloader-UI-preview
+          path: |
+            ui-preview-light-150pct.png
+            ui-preview-dark-150pct.png
           if-no-files-found: error
           retention-days: 7
 
@@ -135,8 +182,12 @@ jobs:
 
           im = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
           d = ImageDraw.Draw(im)
-          d.rounded_rectangle((12, 12, 244, 244), radius=58, fill=(255, 0, 0, 255))
-          d.polygon([(103, 78), (103, 178), (181, 128)], fill='white')
+          # Rounded indigo tile matching the app accent (#4F46E5).
+          d.rounded_rectangle((12, 12, 244, 244), radius=58, fill=(79, 70, 229, 255))
+          # Download glyph: downward arrow over a tray.
+          d.rectangle((120, 60, 136, 150), fill='white')
+          d.polygon([(92, 132), (164, 132), (128, 178)], fill='white')
+          d.rounded_rectangle((78, 188, 178, 202), radius=7, fill='white')
           im.save('app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
           '@ | Set-Content -Encoding utf8 make_icon.py
           python make_icon.py
@@ -147,18 +198,18 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(1,0,0,0), prodvers=(1,0,0,0), mask=0x3f,
+              filevers=(2,0,0,0), prodvers=(2,0,0,0), mask=0x3f,
               flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)
             ),
             kids=[
               StringFileInfo([StringTable(u'040904B0', [
                 StringStruct(u'CompanyName', u'WenZurich'),
-                StringStruct(u'FileDescription', u'YouTube MP4 Downloader'),
-                StringStruct(u'FileVersion', u'1.0.0'),
-                StringStruct(u'InternalName', u'YouTube MP4 Downloader'),
-                StringStruct(u'OriginalFilename', u'YouTube MP4 Downloader.exe'),
-                StringStruct(u'ProductName', u'YouTube MP4 Downloader'),
-                StringStruct(u'ProductVersion', u'1.0.0')
+                StringStruct(u'FileDescription', u'Video Downloader'),
+                StringStruct(u'FileVersion', u'2.0.0'),
+                StringStruct(u'InternalName', u'Video Downloader'),
+                StringStruct(u'OriginalFilename', u'Video Downloader.exe'),
+                StringStruct(u'ProductName', u'Video Downloader'),
+                StringStruct(u'ProductVersion', u'2.0.0')
               ])]),
               VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
             ]
@@ -173,7 +224,7 @@ jobs:
             --clean `
             --onefile `
             --windowed `
-            --name "YouTube MP4 Downloader" `
+            --name "Video Downloader" `
             --icon app.ico `
             --version-file version_info.txt `
             --collect-all imageio_ffmpeg `
@@ -185,11 +236,11 @@ jobs:
       - name: Verify EXE exists and metadata
         shell: pwsh
         run: |
-          $exe = 'dist\YouTube MP4 Downloader.exe'
+          $exe = 'dist\Video Downloader.exe'
           if (-not (Test-Path $exe)) { throw 'EXE was not produced.' }
           $item = Get-Item $exe
           $v = $item.VersionInfo
-          if ($v.ProductName -ne 'YouTube MP4 Downloader') { throw "Unexpected ProductName: $($v.ProductName)" }
+          if ($v.ProductName -ne 'Video Downloader') { throw "Unexpected ProductName: $($v.ProductName)" }
           if ($v.CompanyName -ne 'WenZurich') { throw "Unexpected CompanyName: $($v.CompanyName)" }
           $item | Format-List Name,Length,LastWriteTime
           $v | Format-List CompanyName,ProductName,FileDescription,FileVersion,ProductVersion
@@ -198,22 +249,22 @@ jobs:
         shell: pwsh
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
-          $p = Start-Process -FilePath 'dist\YouTube MP4 Downloader.exe' -ArgumentList '--smoke-test' -PassThru -Wait
+          $p = Start-Process -FilePath 'dist\Video Downloader.exe' -ArgumentList '--smoke-test' -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Packaged EXE smoke test failed with exit code $($p.ExitCode)" }
 
       - name: Generate SHA256
         shell: pwsh
         run: |
-          Get-FileHash 'dist\YouTube MP4 Downloader.exe' -Algorithm SHA256 |
+          Get-FileHash 'dist\Video Downloader.exe' -Algorithm SHA256 |
             Format-List |
             Out-File -Encoding utf8 'dist\SHA256.txt'
 
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: YouTube-MP4-Downloader-Windows-x64-v1.0.0
+          name: Video-Downloader-Windows-x64-v2.0.0
           path: |
-            dist/YouTube MP4 Downloader.exe
+            dist/Video Downloader.exe
             dist/SHA256.txt
           if-no-files-found: error
           retention-days: 30
