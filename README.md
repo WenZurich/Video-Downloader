@@ -9,6 +9,7 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp), it works with YouTube, Vi
 - **Universal** – paste a link from any supported site, not just YouTube
 - **Download queue** – keep pasting links while downloads are running; new links are appended in order
 - **Failure isolation** – a site/download failure stays on that queue item instead of taking down the app; transient failures get one conservative compatibility retry and can be retried manually
+- **Portable Windows package** – ships as an `onedir` ZIP instead of a self-extracting `onefile` EXE to reduce browser/antivirus heuristic false positives
 - **YouTube compatibility fallback** – retryable YouTube failures can switch to the `web_safari` HLS client, then use the same lossless HLS → MP4 remux path
 - **Sequential by default** – one download at a time for predictable bandwidth and stability
 - **Optional concurrency** – switch to 2 or 3 simultaneous downloads when you want more throughput
@@ -33,7 +34,7 @@ Only download content you are authorized to save, and comply with each site's te
 
 ## Runtime
 
-The EXE bundles its own Python runtime and FFmpeg. No separate Python installation is required.
+The portable folder bundles its own Python runtime and FFmpeg. No separate Python installation is required. Keep the extracted folder contents together and run `Video Downloader.exe`.
 
 ## Build quality
 
@@ -49,7 +50,7 @@ The Windows executable is built on GitHub Actions with a hardened pipeline:
 - 125% / 150% / 200% HiDPI UI regression tests, with light + dark preview artifacts
 - Windows icon
 - Windows version metadata
-- PyInstaller clean single-file build
+- PyInstaller clean portable `onedir` build (`--noupx`, no self-extracting onefile wrapper)
 - Packaged EXE smoke test
 - SHA-256 checksum artifact
 
@@ -60,3 +61,10 @@ The build includes yt-dlp's recommended `curl_cffi` impersonation backend and re
 ## Adding a language
 
 Open `app.py`, copy an entry in the `TRANSLATIONS` dict, translate each value, and add the new code to `LANG_ORDER`. The UI and the CI language test pick it up automatically.
+
+
+## Windows download reputation
+
+The portable ZIP is intentionally built without PyInstaller's self-extracting `--onefile` wrapper because newly-built unsigned onefile executables can attract browser/antivirus heuristic warnings. The project also publishes the ZIP and its SHA-256 as a GitHub Release asset.
+
+This build is still unsigned unless an Authenticode certificate is added. Packaging changes can reduce false positives, but they cannot guarantee Chrome Safe Browsing or Microsoft SmartScreen reputation. Authenticode signing is the reliable next step for publisher identity and reputation.
