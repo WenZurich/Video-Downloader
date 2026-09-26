@@ -878,6 +878,14 @@ class DownloadWorker(QObject):
                 }
         return options
 
+    def _apply_title_output(self, options, resolved_title):
+        if resolved_title and not self.playlist:
+            options["outtmpl"] = os.path.join(
+                self.folder,
+                safe_output_title(resolved_title) + ".%(ext)s",
+            )
+        return options
+
     @staticmethod
     def _is_missav_url(url):
         return is_missav_url(url)
@@ -980,11 +988,7 @@ class DownloadWorker(QObject):
             options = self._build_options(ffmpeg_exe)
             if resolved_headers:
                 options["http_headers"] = resolved_headers
-            if resolved_title and not self.playlist:
-                options["outtmpl"] = os.path.join(
-                    self.folder,
-                    safe_output_title(resolved_title) + ".%(ext)s",
-                )
+            self._apply_title_output(options, resolved_title)
 
             try:
                 with yt_dlp.YoutubeDL(options) as ydl:
@@ -1004,11 +1008,7 @@ class DownloadWorker(QObject):
                 fallback = self._build_options(ffmpeg_exe, compatibility=True)
                 if resolved_headers:
                     fallback["http_headers"] = resolved_headers
-                if resolved_title and not self.playlist:
-                    fallback["outtmpl"] = os.path.join(
-                        self.folder,
-                        safe_output_title(resolved_title) + ".%(ext)s",
-                    )
+                self._apply_title_output(fallback, resolved_title)
                 with yt_dlp.YoutubeDL(fallback) as ydl:
                     info = ydl.extract_info(download_url, download=True)
 
