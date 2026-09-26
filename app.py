@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import traceback
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -15,7 +16,7 @@ import imageio_ffmpeg
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from PySide6.QtCore import QObject, Qt, QProcess, QTimer, Signal, QSettings, QUrl
-from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QFileDialog, QFrame,
     QHeaderView, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Video Downloader"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 ORG_NAME = "WenZurich"
 
 # ---------------------------------------------------------------------------
@@ -43,13 +44,15 @@ TRANSLATIONS = {
         "paste": "貼上並加入",
         "add_queue": "加入佇列",
         "queue": "下載佇列",
-        "queue_hint": "可持續加入網址；預設依序下載",
+        "queue_hint": "可持續加入網址；清單固定捲動，不影響其他設定",
         "queue_count": "{count} 個項目",
+        "queue_state_summary": "{pending} 等待 · {active} 下載中 · {done} 完成 · {failed} 失敗",
+        "resume_queue": "繼續下載",
         "queue_status": "狀態",
         "queue_item": "項目",
         "queue_progress": "進度",
         "remove_selected": "移除選取",
-        "clear_finished": "清除已結束",
+        "clear_finished": "清除完成",
         "retry_failed": "重試失敗",
         "retrying": "正在自動重試",
         "retrying_detail": "網站回應異常，切換相容模式後再試一次",
@@ -133,13 +136,15 @@ TRANSLATIONS = {
         "paste": "Paste & add",
         "add_queue": "Add to queue",
         "queue": "Download queue",
-        "queue_hint": "Keep adding links; downloads run sequentially by default",
+        "queue_hint": "Keep adding links; the queue stays compact and scrollable",
         "queue_count": "{count} items",
+        "queue_state_summary": "{pending} waiting · {active} downloading · {done} done · {failed} failed",
+        "resume_queue": "Resume downloads",
         "queue_status": "Status",
         "queue_item": "Item",
         "queue_progress": "Progress",
         "remove_selected": "Remove selected",
-        "clear_finished": "Clear finished",
+        "clear_finished": "Clear completed",
         "retry_failed": "Retry failed",
         "retrying": "Retrying automatically",
         "retrying_detail": "The site returned an error; retrying once in compatibility mode",
@@ -366,9 +371,26 @@ QTreeWidget::item {{
     padding: 3px 6px;
     border-bottom: 1px solid {p['border']};
 }}
+QTreeWidget::item:alternate {{
+    background: {p['surface']};
+}}
 QTreeWidget::item:selected {{
     background: {p['secondary']};
     color: {p['text']};
+}}
+QTreeWidget QScrollBar:vertical {{
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}}
+QTreeWidget QScrollBar::handle:vertical {{
+    background: {p['border_strong']};
+    border-radius: 5px;
+    min-height: 28px;
+}}
+QTreeWidget QScrollBar::add-line:vertical,
+QTreeWidget QScrollBar::sub-line:vertical {{
+    height: 0;
 }}
 QHeaderView::section {{
     background: {p['surface_2']};
@@ -417,10 +439,15 @@ QPushButton#Ghost:disabled {{
     border: 1px solid {p['border']};
     color: {p['disabled_text']};
 }}
-QFrame#StatusCard {{
+QFrame#SettingsPanel {{
     background: {p['surface_2']};
     border: 1px solid {p['border']};
     border-radius: 14px;
+}}
+QFrame#StatusCard {{
+    background: {p['surface']};
+    border: 1px solid {p['border']};
+    border-radius: 12px;
 }}
 QComboBox#Toolbar {{
     min-height: 34px;
@@ -459,6 +486,93 @@ def resolve_theme(mode):
     except Exception:
         pass
     return "light"
+
+
+# ---------------------------------------------------------------------------
+# Page metadata / output naming
+# ---------------------------------------------------------------------------
+
+class _PageTitleParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.og_title = ""
+        self.twitter_title = ""
+        self.title_parts = []
+        self.h1_parts = []
+        self._in_title = False
+        self._in_h1 = False
+
+    def handle_starttag(self, tag, attrs):
+        name = tag.lower()
+        attrs = {str(k).lower(): (v or "") for k, v in attrs}
+        if name == "meta":
+            key = (attrs.get("property") or attrs.get("name") or "").lower()
+            value = attrs.get("content", "").strip()
+            if key == "og:title" and value and not self.og_title:
+                self.og_title = value
+            elif key == "twitter:title" and value and not self.twitter_title:
+                self.twitter_title = value
+        elif name == "title":
+            self._in_title = True
+        elif name == "h1":
+            self._in_h1 = True
+
+    def handle_endtag(self, tag):
+        name = tag.lower()
+        if name == "title":
+            self._in_title = False
+        elif name == "h1":
+            self._in_h1 = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title_parts.append(data)
+        if self._in_h1:
+            self.h1_parts.append(data)
+
+
+def _clean_title_text(value):
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def extract_page_title(html_text):
+    parser = _PageTitleParser()
+    try:
+        parser.feed(html_text or "")
+    except Exception:
+        return ""
+    candidates = (
+        parser.og_title,
+        parser.twitter_title,
+        " ".join(parser.h1_parts),
+        " ".join(parser.title_parts),
+    )
+    for value in candidates:
+        cleaned = _clean_title_text(value)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def safe_output_title(title, fallback="Video", max_chars=160):
+    """Return a readable Windows-safe filename stem without changing the media."""
+    title = _clean_title_text(title) or fallback
+    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title)
+    title = re.sub(r"\s+", " ", title).strip(" .")
+    if not title:
+        title = fallback
+
+    reserved = {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+    if title.upper() in reserved:
+        title = "_" + title
+
+    if len(title) > max_chars:
+        title = title[:max_chars].rstrip(" .")
+    return title or fallback
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +736,8 @@ def resolve_missav_stream(page_url, timeout=30):
     if not is_missav_url(final_url):
         raise RuntimeError("MISSAV_REDIRECTED_TO_UNSUPPORTED_HOST")
 
+    page_title = extract_page_title(response.text)
+
     urls = extract_missav_hls_urls(response.text)
     stream_url = choose_missav_hls_url(urls)
     if not stream_url:
@@ -655,6 +771,7 @@ def resolve_missav_stream(page_url, timeout=30):
         "url": stream_url,
         "page_url": final_url,
         "headers": request_headers,
+        "title": page_title,
     }
 
 
@@ -677,6 +794,7 @@ class DownloadWorker(QObject):
         self.i18n = i18n
         self._cancel = threading.Event()
         self._current_index = 0
+        self.media_title = ""
 
     def cancel(self):
         self._cancel.set()
@@ -766,6 +884,14 @@ class DownloadWorker(QObject):
                 }
         return options
 
+    def _apply_title_output(self, options, resolved_title):
+        if resolved_title and not self.playlist:
+            options["outtmpl"] = os.path.join(
+                self.folder,
+                safe_output_title(resolved_title) + ".%(ext)s",
+            )
+        return options
+
     @staticmethod
     def _is_missav_url(url):
         return is_missav_url(url)
@@ -809,6 +935,11 @@ class DownloadWorker(QObject):
             raise yt_dlp.utils.DownloadError("USER_CANCELLED")
 
         state = data.get("status")
+        info_dict = data.get("info_dict") or {}
+        media_title = _clean_title_text(info_dict.get("title", ""))
+        if media_title and not self.media_title:
+            self.media_title = media_title
+
         if state == "downloading":
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
             current = data.get("downloaded_bytes") or 0
@@ -847,6 +978,7 @@ class DownloadWorker(QObject):
 
             download_url = self.url
             resolved_headers = None
+            resolved_title = ""
 
             if self._is_missav_url(self.url):
                 self.progress.emit(
@@ -857,6 +989,9 @@ class DownloadWorker(QObject):
                 resolved = resolve_missav_stream(self.url)
                 download_url = resolved["url"]
                 resolved_headers = resolved["headers"]
+                resolved_title = _clean_title_text(resolved.get("title", ""))
+                if resolved_title:
+                    self.media_title = resolved_title
                 self.progress.emit(
                     0.0,
                     self.i18n.tr("missav_ready"),
@@ -866,6 +1001,7 @@ class DownloadWorker(QObject):
             options = self._build_options(ffmpeg_exe)
             if resolved_headers:
                 options["http_headers"] = resolved_headers
+            self._apply_title_output(options, resolved_title)
 
             try:
                 with yt_dlp.YoutubeDL(options) as ydl:
@@ -885,6 +1021,7 @@ class DownloadWorker(QObject):
                 fallback = self._build_options(ffmpeg_exe, compatibility=True)
                 if resolved_headers:
                     fallback["http_headers"] = resolved_headers
+                self._apply_title_output(fallback, resolved_title)
                 with yt_dlp.YoutubeDL(fallback) as ydl:
                     info = ydl.extract_info(download_url, download=True)
 
@@ -892,7 +1029,9 @@ class DownloadWorker(QObject):
                 self.cancelled.emit()
                 return
 
-            if info and info.get("_type") == "playlist":
+            if resolved_title:
+                title = resolved_title
+            elif info and info.get("_type") == "playlist":
                 title = info.get("title") or "Playlist"
             else:
                 title = (info or {}).get("title") or "Video"
@@ -944,12 +1083,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(1040, 840)
         self.setMinimumSize(880, 720)
+        saved_geometry = self.settings.value("window_geometry")
+        if saved_geometry:
+            self.restoreGeometry(saved_geometry)
 
         root = QWidget()
         self.setCentralWidget(root)
         page = QVBoxLayout(root)
-        page.setContentsMargins(38, 28, 38, 30)
-        page.setSpacing(18)
+        page.setContentsMargins(34, 20, 34, 22)
+        page.setSpacing(14)
 
         # ---- Header: title + toolbar (theme / language) ----
         head = QHBoxLayout()
@@ -985,8 +1127,8 @@ class MainWindow(QMainWindow):
         card = QFrame()
         card.setObjectName("Card")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(26, 24, 26, 24)
-        card_layout.setSpacing(16)
+        card_layout.setContentsMargins(24, 18, 24, 18)
+        card_layout.setSpacing(12)
 
         self.link_label = self._section_label()
         card_layout.addWidget(self.link_label)
@@ -1007,39 +1149,67 @@ class MainWindow(QMainWindow):
         self.paste_btn.setMinimumWidth(126)
         self.paste_btn.clicked.connect(self.paste_url)
 
+        self.focus_url_shortcut = QShortcut(QKeySequence("Ctrl+L"), self)
+        self.focus_url_shortcut.activated.connect(self._focus_url_input)
+
         url_row.addWidget(self.url_edit, 1)
         url_row.addWidget(self.add_btn)
         url_row.addWidget(self.paste_btn)
         card_layout.addLayout(url_row)
 
-        # Download queue
+        # Desktop download-manager layout: queue gets the main canvas; the
+        # adjustable settings and actions live in a compact side panel.
+        body_row = QHBoxLayout()
+        body_row.setSpacing(16)
+
+        queue_panel = QWidget()
+        queue_layout = QVBoxLayout(queue_panel)
+        queue_layout.setContentsMargins(0, 0, 0, 0)
+        queue_layout.setSpacing(10)
+
         queue_head = QHBoxLayout()
         queue_head.setSpacing(10)
         self.queue_label = self._section_label()
-        self.queue_hint_label = QLabel()
-        self.queue_hint_label.setObjectName("Faint")
         self.queue_count_label = QLabel()
         self.queue_count_label.setObjectName("Muted")
+        self.queue_count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         queue_head.addWidget(self.queue_label)
-        queue_head.addWidget(self.queue_hint_label)
         queue_head.addStretch(1)
         queue_head.addWidget(self.queue_count_label)
-        card_layout.addLayout(queue_head)
+        queue_layout.addLayout(queue_head)
+
+        self.queue_hint_label = QLabel()
+        self.queue_hint_label.setObjectName("Faint")
+        self.queue_hint_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.queue_hint_label.setMinimumWidth(0)
+        queue_layout.addWidget(self.queue_hint_label)
 
         self.queue_tree = QTreeWidget()
         self.queue_tree.setColumnCount(3)
         self.queue_tree.setRootIsDecorated(False)
+        self.queue_tree.setIndentation(0)
         self.queue_tree.setUniformRowHeights(True)
+        self.queue_tree.setAlternatingRowColors(True)
         self.queue_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.queue_tree.setMinimumHeight(160)
-        self.queue_tree.setMaximumHeight(210)
+        self.queue_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.queue_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.queue_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.queue_tree.setTextElideMode(Qt.ElideMiddle)
+        self.queue_tree.setMinimumHeight(280)
+        self.queue_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.queue_tree.itemSelectionChanged.connect(self._refresh_queue_controls)
+        self.delete_queue_shortcut = QShortcut(QKeySequence("Delete"), self.queue_tree)
+        self.delete_queue_shortcut.activated.connect(self.remove_selected_jobs)
+
         header = self.queue_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        card_layout.addWidget(self.queue_tree)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.resizeSection(0, 104)
+        header.resizeSection(2, 76)
+        queue_layout.addWidget(self.queue_tree, 1)
 
         queue_actions = QHBoxLayout()
         queue_actions.setSpacing(8)
@@ -1053,85 +1223,77 @@ class MainWindow(QMainWindow):
         self.retry_failed_btn.setObjectName("Ghost")
         self.retry_failed_btn.clicked.connect(self.retry_failed_jobs)
 
-        self.concurrency_label = QLabel()
-        self.concurrency_label.setObjectName("Muted")
+        queue_actions.addWidget(self.remove_btn)
+        queue_actions.addWidget(self.retry_failed_btn)
+        queue_actions.addWidget(self.clear_finished_btn)
+        queue_actions.addStretch(1)
+        queue_layout.addLayout(queue_actions)
+
+        body_row.addWidget(queue_panel, 1)
+
+        settings_panel = QFrame()
+        settings_panel.setObjectName("SettingsPanel")
+        settings_panel.setMinimumWidth(286)
+        settings_panel.setMaximumWidth(324)
+        settings_layout = QVBoxLayout(settings_panel)
+        settings_layout.setContentsMargins(16, 16, 16, 16)
+        settings_layout.setSpacing(8)
+
+        self.quality_label = self._section_label()
+        self.quality_combo = QComboBox()
+        settings_layout.addWidget(self.quality_label)
+        settings_layout.addWidget(self.quality_combo)
+
+        self.playlist_label = self._section_label()
+        self.playlist_combo = QComboBox()
+        settings_layout.addWidget(self.playlist_label)
+        settings_layout.addWidget(self.playlist_combo)
+
+        self.concurrency_label = self._section_label()
         self.concurrency_combo = QComboBox()
-        self.concurrency_combo.setObjectName("Toolbar")
-        self.concurrency_combo.setFixedWidth(132)
         for value in (1, 2, 3):
             self.concurrency_combo.addItem("", value)
         saved_concurrency = int(self.settings.value("concurrency", 1) or 1)
         saved_concurrency = saved_concurrency if saved_concurrency in (1, 2, 3) else 1
         self.concurrency_combo.setCurrentIndex(saved_concurrency - 1)
         self.concurrency_combo.currentIndexChanged.connect(self.on_concurrency_changed)
+        settings_layout.addWidget(self.concurrency_label)
+        settings_layout.addWidget(self.concurrency_combo)
 
-        queue_actions.addWidget(self.remove_btn)
-        queue_actions.addWidget(self.retry_failed_btn)
-        queue_actions.addWidget(self.clear_finished_btn)
-        queue_actions.addStretch(1)
-        queue_actions.addWidget(self.concurrency_label)
-        queue_actions.addWidget(self.concurrency_combo)
-        card_layout.addLayout(queue_actions)
-
-        # Quality / format / playlist row
-        options = QHBoxLayout()
-        options.setSpacing(16)
-
-        quality_col = QVBoxLayout()
-        quality_col.setSpacing(8)
-        self.quality_label = self._section_label()
-        quality_col.addWidget(self.quality_label)
-        self.quality_combo = QComboBox()
-        quality_col.addWidget(self.quality_combo)
-
-        format_col = QVBoxLayout()
-        format_col.setSpacing(8)
-        self.format_label = self._section_label()
-        format_col.addWidget(self.format_label)
-        self.format_edit = QLineEdit("MP4")
-        self.format_edit.setReadOnly(True)
-        format_col.addWidget(self.format_edit)
-
-        playlist_col = QVBoxLayout()
-        playlist_col.setSpacing(8)
-        self.playlist_label = self._section_label()
-        playlist_col.addWidget(self.playlist_label)
-        self.playlist_combo = QComboBox()
-        playlist_col.addWidget(self.playlist_combo)
-
-        options.addLayout(quality_col, 1)
-        options.addLayout(format_col, 1)
-        options.addLayout(playlist_col, 1)
-        card_layout.addLayout(options)
-
-        # Save location
         self.save_label = self._section_label()
-        card_layout.addWidget(self.save_label)
+        settings_layout.addWidget(self.save_label)
+
         path_row = QHBoxLayout()
-        path_row.setSpacing(10)
+        path_row.setSpacing(8)
         saved_path = self.settings.value("folder", str(Path.home() / "Downloads"))
         self.path_edit = QLineEdit(saved_path)
         self.browse_btn = QPushButton()
         self.browse_btn.setObjectName("Secondary")
-        self.browse_btn.setMinimumWidth(140)
+        self.browse_btn.setMinimumWidth(106)
         self.browse_btn.clicked.connect(self.choose_folder)
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(self.browse_btn)
-        card_layout.addLayout(path_row)
+        settings_layout.addLayout(path_row)
 
-        # Status card
+        settings_layout.addStretch(1)
+
         status_card = QFrame()
         status_card.setObjectName("StatusCard")
         status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(18, 14, 18, 16)
-        status_layout.setSpacing(5)
+        status_layout.setContentsMargins(12, 10, 12, 11)
+        status_layout.setSpacing(4)
 
         self.status_label = QLabel()
         f = QFont("Segoe UI", 11)
         f.setWeight(QFont.DemiBold)
         self.status_label.setFont(f)
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.status_label.setMinimumWidth(0)
+
         self.detail_label = QLabel()
         self.detail_label.setObjectName("Muted")
+        self.detail_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.detail_label.setMinimumWidth(0)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
@@ -1140,13 +1302,12 @@ class MainWindow(QMainWindow):
 
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.detail_label)
-        status_layout.addSpacing(6)
+        status_layout.addSpacing(4)
         status_layout.addWidget(self.progress)
-        card_layout.addWidget(status_card)
+        settings_layout.addWidget(status_card)
 
-        # Action row
-        action_row = QHBoxLayout()
-        action_row.setSpacing(10)
+        secondary_actions = QHBoxLayout()
+        secondary_actions.setSpacing(8)
         self.open_btn = QPushButton()
         self.open_btn.setObjectName("Ghost")
         self.open_btn.clicked.connect(self.open_folder)
@@ -1154,15 +1315,17 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setObjectName("Ghost")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self.cancel_download)
+        secondary_actions.addWidget(self.open_btn, 1)
+        secondary_actions.addWidget(self.cancel_btn, 1)
+        settings_layout.addLayout(secondary_actions)
+
         self.download_btn = QPushButton()
         self.download_btn.setObjectName("Primary")
-        self.download_btn.setMinimumWidth(170)
         self.download_btn.clicked.connect(self.start_download)
-        action_row.addWidget(self.open_btn)
-        action_row.addWidget(self.cancel_btn)
-        action_row.addItem(QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
-        action_row.addWidget(self.download_btn)
-        card_layout.addLayout(action_row)
+        settings_layout.addWidget(self.download_btn)
+
+        body_row.addWidget(settings_panel)
+        card_layout.addLayout(body_row, 1)
 
         self.note = QLabel()
         self.note.setObjectName("Faint")
@@ -1226,7 +1389,6 @@ class MainWindow(QMainWindow):
             self._render_job(job)
         self._refresh_queue_controls()
         self.quality_label.setText(tr("quality"))
-        self.format_label.setText(tr("output_format"))
         self.playlist_label.setText(tr("playlist"))
         self.save_label.setText(tr("save_location"))
         self.browse_btn.setText(tr("choose_folder"))
@@ -1299,6 +1461,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("concurrency", value)
 
     # ---- actions ----
+    def _focus_url_input(self):
+        self.url_edit.setFocus()
+        self.url_edit.selectAll()
+
     def _extract_urls(self, text):
         """Extract HTTP(S) links from clipboard/input while preserving order."""
         if not text:
@@ -1320,10 +1486,28 @@ class MainWindow(QMainWindow):
             "cancelled": "status_cancelled",
         }.get(status, "status_pending"))
 
+    @staticmethod
+    def _compact_url(url):
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname or url
+            path = (parsed.path or "").rstrip("/")
+            tail = path.rsplit("/", 1)[-1] if path else ""
+            if tail:
+                return f"{host}  ·  {tail}"
+            return host
+        except Exception:
+            return url
+
     def _render_job(self, job):
         item = job["item"]
         item.setText(0, self._status_text(job["status"]))
-        item.setText(1, job["url"])
+
+        display_name = _clean_title_text(job.get("title", ""))
+        if not display_name:
+            display_name = self._compact_url(job["url"])
+        item.setText(1, display_name)
+
         pct = job.get("pct", 0.0)
         if job["status"] == "done":
             item.setText(2, "100%")
@@ -1331,9 +1515,12 @@ class MainWindow(QMainWindow):
             item.setText(2, "—")
         else:
             item.setText(2, f"{pct:.0f}%")
-        item.setToolTip(1, job["url"])
-        if job.get("error"):
-            item.setToolTip(0, job["error"])
+
+        tooltip = job["url"]
+        if job.get("title"):
+            tooltip = job["title"] + "\n" + job["url"]
+        item.setToolTip(1, tooltip)
+        item.setToolTip(0, job.get("error", ""))
 
     def _queue_counts(self):
         counts = {"pending": 0, "active": 0, "done": 0, "failed": 0, "cancelled": 0}
@@ -1347,6 +1534,19 @@ class MainWindow(QMainWindow):
     def _refresh_queue_controls(self):
         counts = self._queue_counts()
         self.queue_count_label.setText(self.i18n.tr("queue_count", count=len(self.jobs)))
+        if self.jobs:
+            self.queue_hint_label.setText(
+                self.i18n.tr(
+                    "queue_state_summary",
+                    pending=counts["pending"],
+                    active=counts["active"],
+                    done=counts["done"],
+                    failed=counts["failed"],
+                )
+            )
+        else:
+            self.queue_hint_label.setText(self.i18n.tr("queue_hint"))
+
         removable = any(
             self._find_job(item.data(0, Qt.UserRole)) is not None
             and self._find_job(item.data(0, Qt.UserRole))["status"] != "active"
@@ -1354,16 +1554,21 @@ class MainWindow(QMainWindow):
         )
         self.remove_btn.setEnabled(removable)
         self.clear_finished_btn.setEnabled(
-            any(job["status"] in ("done", "failed", "cancelled") for job in self.jobs)
+            any(job["status"] == "done" for job in self.jobs)
         )
         self.retry_failed_btn.setEnabled(
             any(job["status"] == "failed" for job in self.jobs)
         )
-        self.download_btn.setEnabled(
+        can_start = (
             (not self.queue_running)
             and (not self.active_jobs)
             and counts["pending"] > 0
         )
+        self.download_btn.setEnabled(can_start)
+        if can_start and (counts["done"] or counts["failed"] or counts["cancelled"]):
+            self.download_btn.setText(self.i18n.tr("resume_queue"))
+        else:
+            self.download_btn.setText(self.i18n.tr("start_queue"))
         self._update_overall_progress()
 
     def _update_overall_progress(self):
@@ -1383,8 +1588,15 @@ class MainWindow(QMainWindow):
         existing = {
             job["url"] for job in self.jobs if job["status"] in ("pending", "active")
         }
+        scroll_bar = self.queue_tree.verticalScrollBar()
+        follow_tail = (
+            scroll_bar.maximum() == 0
+            or scroll_bar.value() >= max(0, scroll_bar.maximum() - 24)
+        )
+
         added = 0
         skipped = 0
+        last_added_item = None
         for url in urls:
             if url in existing:
                 skipped += 1
@@ -1405,6 +1617,7 @@ class MainWindow(QMainWindow):
             self.jobs.append(job)
             self.queue_tree.addTopLevelItem(item)
             self._render_job(job)
+            last_added_item = item
             existing.add(url)
             added += 1
 
@@ -1420,6 +1633,11 @@ class MainWindow(QMainWindow):
             self.detail_label.setText(self.i18n.tr("skipped_duplicates", skipped=skipped))
 
         self._refresh_queue_controls()
+        if last_added_item is not None and follow_tail:
+            self.queue_tree.scrollToItem(
+                last_added_item,
+                QAbstractItemView.PositionAtBottom,
+            )
         if self.queue_running:
             self._pump_queue()
         return added, skipped
@@ -1446,8 +1664,9 @@ class MainWindow(QMainWindow):
         self._refresh_queue_controls()
 
     def clear_finished_jobs(self):
+        # Keep failed rows visible so users do not lose retry/error context.
         for job in list(self.jobs):
-            if job["status"] not in ("done", "failed", "cancelled"):
+            if job["status"] != "done":
                 continue
             index = self.queue_tree.indexOfTopLevelItem(job["item"])
             if index >= 0:
@@ -1468,6 +1687,10 @@ class MainWindow(QMainWindow):
         self._refresh_queue_controls()
         if retried and self.queue_running:
             self._pump_queue()
+
+    def closeEvent(self, event):
+        self.settings.setValue("window_geometry", self.saveGeometry())
+        super().closeEvent(event)
 
     def choose_folder(self):
         current = self.path_edit.text().strip() or str(Path.home())
@@ -1629,6 +1852,10 @@ class MainWindow(QMainWindow):
         entry["last_state"] = state
 
         if state.get("status") == "progress":
+            job = self._find_job(job_id)
+            media_title = _clean_title_text(state.get("media_title", ""))
+            if job is not None and media_title:
+                job["title"] = media_title
             self.on_job_progress(
                 job_id,
                 float(state.get("pct", 0.0)),
@@ -1849,6 +2076,7 @@ def download_worker_main(request_path, state_path):
                 "pct": float(pct),
                 "title": title,
                 "detail": detail,
+                "media_title": worker.media_title,
             },
         )
 

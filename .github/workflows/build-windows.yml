@@ -18,7 +18,7 @@ concurrency:
 
 env:
   APP_NAME: "Video Downloader"
-  APP_VERSION: "2.4.0"
+  APP_VERSION: "2.5.0"
 
 jobs:
   build-windows:
@@ -175,6 +175,27 @@ jobs:
               'https://surrit.com/preferred/playlist.m3u8',
           ]) == 'https://surrit.com/preferred/playlist.m3u8'
 
+          html = '''
+          <html><head>
+          <meta property="og:title" content="Sample: Title? 1080p">
+          <title>Fallback title</title>
+          </head><body><h1>Heading title</h1></body></html>
+          '''
+          assert mod.extract_page_title(html) == 'Sample: Title? 1080p'
+          safe = mod.safe_output_title('Sample: Title? 1080p')
+          assert safe == 'Sample Title 1080p'
+
+          worker = mod.DownloadWorker(
+              'https://example.com/source.m3u8',
+              'C:/Downloads',
+              'Best quality',
+              False,
+              mod.I18n('en'),
+          )
+          opts = worker._build_options(mod.imageio_ffmpeg.get_ffmpeg_exe())
+          worker._apply_title_output(opts, 'Sample: Title? 1080p')
+          assert opts['outtmpl'].endswith('Sample Title 1080p.%(ext)s')
+
           print('Site-specific HLS resolver fixture OK')
           '@ | Set-Content -Encoding utf8 test_missav_fixture.py
           python test_missav_fixture.py
@@ -199,6 +220,8 @@ jobs:
           assert parsed.scheme == 'https'
           assert parsed.path.endswith('.m3u8')
           assert 'Referer' in resolved['headers']
+          assert resolved.get('title'), 'Page title was not extracted'
+          assert len(mod.safe_output_title(resolved['title'])) >= 8
 
           # Prove that the CDN is not only exposing the master playlist:
           # follow one variant and fetch bytes from a real media segment using
@@ -369,6 +392,57 @@ jobs:
           '@ | Set-Content -Encoding utf8 test_queue_scheduler.py
           python test_queue_scheduler.py
 
+      - name: Test large queue layout stability
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          @'
+          import importlib.util
+          from PySide6.QtCore import QSettings, Qt
+          from PySide6.QtWidgets import QApplication
+
+          spec = importlib.util.spec_from_file_location('appmod', 'app.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          app = QApplication.instance() or QApplication([])
+          s = QSettings('WenZurich', 'ci-large-queue')
+          s.clear()
+          w = mod.MainWindow(settings=s)
+          w.resize(1040, 840)
+          w.show()
+          app.processEvents()
+
+          urls = [
+              'https://example.com/library/item-{0}/'.format(i)
+              + ('very-long-path-' * 18)
+              + '?token=' + ('x' * 120)
+              for i in range(120)
+          ]
+          added, skipped = w.add_urls('\n'.join(urls))
+          app.processEvents(); app.processEvents()
+
+          assert added == 120 and skipped == 0
+          assert w.queue_tree.topLevelItemCount() == 120
+          assert w.queue_tree.minimumHeight() >= 280
+          assert w.queue_tree.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+          assert w.queue_tree.verticalScrollBar().maximum() > 0
+          assert w.width() == 1040
+          assert len(w.queue_tree.topLevelItem(0).text(1)) < len(urls[0])
+          assert 'waiting' in w.queue_hint_label.text().lower() or '等待' in w.queue_hint_label.text()
+
+          # A very long resolved title must not resize the window.
+          w.jobs[0]['title'] = 'Long resolved title ' + ('A' * 600)
+          w._render_job(w.jobs[0])
+          app.processEvents()
+          assert w.width() == 1040
+
+          w.close()
+          s.clear()
+          print('Large queue UI remains fixed, scrollable, and width-stable')
+          '@ | Set-Content -Encoding utf8 test_large_queue.py
+          python test_large_queue.py
+
       - name: Test UI at 125 percent
         shell: pwsh
         run: |
@@ -400,13 +474,29 @@ jobs:
               w.theme_mode = theme
               w.apply_theme()
               w.resize(1040, 840)
+              demo_urls = '\n'.join(
+                  f'https://example.com/video/{i}/' + ('sample-path-' * 8)
+                  for i in range(24)
+              )
+              w.add_urls(demo_urls)
+              w.jobs[0]['status'] = 'done'
+              w.jobs[0]['pct'] = 100.0
+              w.jobs[0]['title'] = 'A completed video with a readable title'
+              w.jobs[1]['status'] = 'active'
+              w.jobs[1]['pct'] = 46.0
+              w.jobs[2]['status'] = 'failed'
+              w.jobs[2]['pct'] = 100.0
+              w.jobs[2]['error'] = 'Example error'
+              for job in w.jobs[:3]:
+                  w._render_job(job)
+              w._refresh_queue_controls()
               w.show()
               app.processEvents(); app.processEvents()
               assert w.url_edit.height() >= 42
               assert w.path_edit.height() >= 42
               assert w.download_btn.height() >= 42
               assert w.quality_combo.height() >= 42
-              assert w.queue_tree.minimumHeight() >= 160
+              assert w.queue_tree.minimumHeight() >= 280
               assert w.concurrency_combo.count() == 3
               pix = QPixmap(w.size())
               w.render(pix)
@@ -460,18 +550,18 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(2,4,0,0), prodvers=(2,4,0,0), mask=0x3f,
+              filevers=(2,5,0,0), prodvers=(2,5,0,0), mask=0x3f,
               flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)
             ),
             kids=[
               StringFileInfo([StringTable(u'040904B0', [
                 StringStruct(u'CompanyName', u'WenZurich'),
                 StringStruct(u'FileDescription', u'Video Downloader'),
-                StringStruct(u'FileVersion', u'2.4.0'),
+                StringStruct(u'FileVersion', u'2.5.0'),
                 StringStruct(u'InternalName', u'Video Downloader'),
                 StringStruct(u'OriginalFilename', u'Video Downloader.exe'),
                 StringStruct(u'ProductName', u'Video Downloader'),
-                StringStruct(u'ProductVersion', u'2.4.0')
+                StringStruct(u'ProductVersion', u'2.5.0')
               ])]),
               VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
             ]
@@ -534,10 +624,10 @@ jobs:
       - name: Upload portable Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: Video-Downloader-Windows-x64-v2.4.0-portable
+          name: Video-Downloader-Windows-x64-v2.5.0-portable
           path: |
-            dist/Video-Downloader-v2.4.0-Windows-x64-portable.zip
-            dist/Video-Downloader-v2.4.0-Windows-x64-portable.zip.sha256.txt
+            dist/Video-Downloader-v2.5.0-Windows-x64-portable.zip
+            dist/Video-Downloader-v2.5.0-Windows-x64-portable.zip.sha256.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -553,7 +643,7 @@ jobs:
             $notes = @"
           Portable Windows x64 build.
 
-          This release includes site-specific HLS compatibility improvements, lossless HLS-to-MP4 remuxing, crash-isolated download workers, download queue support, and the portable onedir Windows package.
+          This release improves large-queue usability, compact scrolling behavior, readable title-based filenames, site-specific HLS compatibility, crash-isolated download workers, and the portable Windows package.
 
           Extract the ZIP, keep the folder contents together, then run Video Downloader.exe.
 
@@ -575,7 +665,9 @@ jobs:
           $notes = @"
           Portable Windows x64 build.
 
-          v2.4.0 adds improved site-specific HLS compatibility using browser impersonation, authenticated request headers, and the existing lossless HLS-to-MP4 path.
+          v2.5.0 refines the download-manager interface for large queues, keeps long URLs and titles from distorting the layout, and uses page/video titles for readable output filenames when metadata is available.
+
+          Site-specific HLS compatibility and lossless HLS-to-MP4 remuxing remain supported.
 
           Every download still runs in a separate worker process. Unsupported sites, yt-dlp exceptions, and even a hard worker-process crash are isolated to the affected queue item; the GUI stays alive and continues the queue.
 
