@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Video Downloader"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 ORG_NAME = "WenZurich"
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ TRANSLATIONS = {
         "receiving": "正在接收影片資料",
         "eta_seconds": "約 {eta} 秒",
         "processing": "正在處理影片",
-        "processing_detail": "合併影像與音訊並輸出 MP4",
+        "processing_detail": "合併影音，或將 HLS / m3u8 無損重新封裝為 MP4",
         "playlist_item": "第 {n} 部 · {pct:.1f}%",
         "done": "下載完成",
         "done_dialog_title": "下載完成",
@@ -163,7 +163,7 @@ TRANSLATIONS = {
         "receiving": "Receiving video data",
         "eta_seconds": "about {eta}s left",
         "processing": "Processing video",
-        "processing_detail": "Merging video and audio into MP4",
+        "processing_detail": "Merging streams or losslessly remuxing HLS / m3u8 to MP4",
         "playlist_item": "Item {n} · {pct:.1f}%",
         "done": "Download complete",
         "done_dialog_title": "Download complete",
@@ -471,6 +471,56 @@ class DownloadWorker(QObject):
             return "bv*+ba/b"
         return f"bv*[height<={h}]+ba/b[height<={h}]"
 
+    def _build_options(self, ffmpeg_exe):
+        """Build yt-dlp options with a lossless MP4 remux guarantee.
+
+        HLS/m3u8 sources can arrive as MPEG-TS or another container. We never
+        re-encode them here: FFmpegVideoRemuxer uses stream copy (-c copy).
+        yt-dlp's forced fixup also repairs the common MPEG-TS-in-MP4 HLS case.
+        """
+        if self.playlist:
+            outtmpl = os.path.join(
+                self.folder,
+                "%(playlist_title,uploader)s",
+                "%(playlist_index)03d - %(title)s [%(id)s].%(ext)s",
+            )
+        else:
+            outtmpl = os.path.join(self.folder, "%(title)s [%(id)s].%(ext)s")
+
+        return {
+            "format": self._format_selector(),
+            "format_sort": ["res", "vcodec:h264", "acodec:aac"],
+            "merge_output_format": "mp4",
+            "postprocessors": [
+                {
+                    "key": "FFmpegVideoRemuxer",
+                    "preferedformat": "mp4",
+                },
+            ],
+            # Force yt-dlp's HLS fixup check. For m3u8-native downloads that
+            # contain MPEG-TS data behind an .mp4 extension, yt-dlp remuxes
+            # with stream copy rather than re-encoding.
+            "fixup": "force",
+            "outtmpl": outtmpl,
+            "windowsfilenames": True,
+            "noplaylist": not self.playlist,
+            "yesplaylist": self.playlist,
+            "ignoreerrors": self.playlist,
+            "progress_hooks": [self._hook],
+            "ffmpeg_location": ffmpeg_exe,
+            # curl_cffi browser impersonation — Chrome fingerprint.
+            "impersonate": ImpersonateTarget("chrome"),
+            "extractor_args": {
+                "generic": {"impersonate": ["chrome"]},
+            },
+            "retries": 10,
+            "fragment_retries": 10,
+            "continuedl": True,
+            "concurrent_fragment_downloads": 4,
+            "quiet": True,
+            "no_warnings": True,
+        }
+
     def _hook(self, data):
         if self._cancel.is_set():
             raise yt_dlp.utils.DownloadError("USER_CANCELLED")
@@ -512,39 +562,7 @@ class DownloadWorker(QObject):
             if not ffmpeg_exe or not os.path.isfile(ffmpeg_exe):
                 raise RuntimeError(f"Bundled FFmpeg missing: {ffmpeg_exe}")
 
-            if self.playlist:
-                outtmpl = os.path.join(
-                    self.folder,
-                    "%(playlist_title,uploader)s",
-                    "%(playlist_index)03d - %(title)s [%(id)s].%(ext)s",
-                )
-            else:
-                outtmpl = os.path.join(self.folder, "%(title)s [%(id)s].%(ext)s")
-
-            options = {
-                "format": self._format_selector(),
-                "format_sort": ["res", "vcodec:h264", "acodec:aac"],
-                "merge_output_format": "mp4",
-                "outtmpl": outtmpl,
-                "windowsfilenames": True,
-                "noplaylist": not self.playlist,
-                "yesplaylist": self.playlist,
-                "ignoreerrors": self.playlist,  # skip a bad item, keep going
-                "progress_hooks": [self._hook],
-                "ffmpeg_location": ffmpeg_exe,
-                # curl_cffi browser impersonation — Chrome fingerprint.
-                # This is what actually helps against many anti-bot 403s.
-                "impersonate": ImpersonateTarget("chrome"),
-                "extractor_args": {
-                    "generic": {"impersonate": ["chrome"]},
-                },
-                "retries": 10,
-                "fragment_retries": 10,
-                "continuedl": True,
-                "concurrent_fragment_downloads": 4,
-                "quiet": True,
-                "no_warnings": True,
-            }
+            options = self._build_options(ffmpeg_exe)
 
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(self.url, download=True)
@@ -1335,6 +1353,22 @@ def smoke_test(app):
             raise RuntimeError("yt-dlp initialization failed")
         if not ydl._impersonate_target_available(ImpersonateTarget()):
             raise RuntimeError("curl_cffi impersonation target is unavailable")
+
+    # Regression guard: HLS/non-MP4 media is always stream-copied into MP4.
+    worker = DownloadWorker(
+        "https://example.com/video.m3u8",
+        str(Path.home() / "Downloads"),
+        "Best quality",
+        False,
+        I18n("en"),
+    )
+    opts = worker._build_options(ffmpeg)
+    assert opts["merge_output_format"] == "mp4"
+    assert opts["fixup"] == "force"
+    assert {
+        "key": "FFmpegVideoRemuxer",
+        "preferedformat": "mp4",
+    } in opts["postprocessors"]
 
     # Test both themes and both languages render without error.
     settings = QSettings(ORG_NAME, APP_NAME + "-SmokeTest")
