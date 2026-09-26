@@ -1431,9 +1431,10 @@ class MainWindow(QMainWindow):
         elif state.get("status") == "cancelled":
             self.on_job_cancelled(job_id)
         else:
+            status_value = getattr(exit_status, "value", exit_status)
             raw = (
                 f"Download worker exited unexpectedly "
-                f"(exit code {exit_code}, status {int(exit_status)})."
+                f"(exit code {exit_code}, status {status_value})."
             )
             self.on_job_failed(job_id, "worker_crashed|" + raw)
 
