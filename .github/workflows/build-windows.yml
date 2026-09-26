@@ -86,6 +86,7 @@ jobs:
           )
           opts = worker._build_options(ffmpeg)
           assert opts['merge_output_format'] == 'mp4'
+          assert opts['hls_use_mpegts'] is False
           assert opts['fixup'] == 'force'
           assert {
               'key': 'FFmpegVideoRemuxer',
