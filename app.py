@@ -789,6 +789,7 @@ class DownloadWorker(QObject):
         self.i18n = i18n
         self._cancel = threading.Event()
         self._current_index = 0
+        self.media_title = ""
 
     def cancel(self):
         self._cancel.set()
@@ -929,6 +930,11 @@ class DownloadWorker(QObject):
             raise yt_dlp.utils.DownloadError("USER_CANCELLED")
 
         state = data.get("status")
+        info_dict = data.get("info_dict") or {}
+        media_title = _clean_title_text(info_dict.get("title", ""))
+        if media_title:
+            self.media_title = media_title
+
         if state == "downloading":
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
             current = data.get("downloaded_bytes") or 0
@@ -979,6 +985,8 @@ class DownloadWorker(QObject):
                 download_url = resolved["url"]
                 resolved_headers = resolved["headers"]
                 resolved_title = _clean_title_text(resolved.get("title", ""))
+                if resolved_title:
+                    self.media_title = resolved_title
                 self.progress.emit(
                     0.0,
                     self.i18n.tr("missav_ready"),
@@ -1814,6 +1822,10 @@ class MainWindow(QMainWindow):
         entry["last_state"] = state
 
         if state.get("status") == "progress":
+            job = self._find_job(job_id)
+            media_title = _clean_title_text(state.get("media_title", ""))
+            if job is not None and media_title:
+                job["title"] = media_title
             self.on_job_progress(
                 job_id,
                 float(state.get("pct", 0.0)),
@@ -2034,6 +2046,7 @@ def download_worker_main(request_path, state_path):
                 "pct": float(pct),
                 "title": title,
                 "detail": detail,
+                "media_title": worker.media_title,
             },
         )
 
