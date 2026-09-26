@@ -500,6 +500,7 @@ class DownloadWorker(QObject):
             "format": self._format_selector(),
             "format_sort": ["res", "vcodec:h264", "acodec:aac"],
             "merge_output_format": "mp4",
+            "hls_use_mpegts": False,
             "postprocessors": [
                 {
                     "key": "FFmpegVideoRemuxer",
@@ -1481,6 +1482,7 @@ def smoke_test(app):
     )
     opts = worker._build_options(ffmpeg)
     assert opts["merge_output_format"] == "mp4"
+    assert opts["hls_use_mpegts"] is False
     assert opts["fixup"] == "force"
     assert {
         "key": "FFmpegVideoRemuxer",
