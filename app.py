@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Video Downloader"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 ORG_NAME = "WenZurich"
 
 # ---------------------------------------------------------------------------
