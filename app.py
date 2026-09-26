@@ -439,10 +439,15 @@ QPushButton#Ghost:disabled {{
     border: 1px solid {p['border']};
     color: {p['disabled_text']};
 }}
-QFrame#StatusCard {{
+QFrame#SettingsPanel {{
     background: {p['surface_2']};
     border: 1px solid {p['border']};
     border-radius: 14px;
+}}
+QFrame#StatusCard {{
+    background: {p['surface']};
+    border: 1px solid {p['border']};
+    border-radius: 12px;
 }}
 QComboBox#Toolbar {{
     min-height: 34px;
@@ -1123,7 +1128,7 @@ class MainWindow(QMainWindow):
         card.setObjectName("Card")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(26, 24, 26, 24)
-        card_layout.setSpacing(16)
+        card_layout.setSpacing(14)
 
         self.link_label = self._section_label()
         card_layout.addWidget(self.link_label)
@@ -1152,8 +1157,16 @@ class MainWindow(QMainWindow):
         url_row.addWidget(self.paste_btn)
         card_layout.addLayout(url_row)
 
-        # Download queue — fixed and scrollable so large batches never distort
-        # the controls below it.
+        # Desktop download-manager layout: queue gets the main canvas; the
+        # adjustable settings and actions live in a compact side panel.
+        body_row = QHBoxLayout()
+        body_row.setSpacing(16)
+
+        queue_panel = QWidget()
+        queue_layout = QVBoxLayout(queue_panel)
+        queue_layout.setContentsMargins(0, 0, 0, 0)
+        queue_layout.setSpacing(10)
+
         queue_head = QHBoxLayout()
         queue_head.setSpacing(10)
         self.queue_label = self._section_label()
@@ -1164,13 +1177,13 @@ class MainWindow(QMainWindow):
         queue_head.addWidget(self.queue_label)
         queue_head.addStretch(1)
         queue_head.addWidget(self.queue_count_label)
-        card_layout.addLayout(queue_head)
+        queue_layout.addLayout(queue_head)
 
         self.queue_hint_label = QLabel()
         self.queue_hint_label.setObjectName("Faint")
         self.queue_hint_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.queue_hint_label.setMinimumWidth(0)
-        card_layout.addWidget(self.queue_hint_label)
+        queue_layout.addWidget(self.queue_hint_label)
 
         self.queue_tree = QTreeWidget()
         self.queue_tree.setColumnCount(3)
@@ -1183,8 +1196,7 @@ class MainWindow(QMainWindow):
         self.queue_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.queue_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.queue_tree.setTextElideMode(Qt.ElideMiddle)
-        self.queue_tree.setMinimumHeight(188)
-        self.queue_tree.setMaximumHeight(228)
+        self.queue_tree.setMinimumHeight(300)
         self.queue_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.queue_tree.itemSelectionChanged.connect(self._refresh_queue_controls)
         self.delete_queue_shortcut = QShortcut(QKeySequence("Delete"), self.queue_tree)
@@ -1197,7 +1209,7 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(2, QHeaderView.Fixed)
         header.resizeSection(0, 104)
         header.resizeSection(2, 76)
-        card_layout.addWidget(self.queue_tree)
+        queue_layout.addWidget(self.queue_tree, 1)
 
         queue_actions = QHBoxLayout()
         queue_actions.setSpacing(8)
@@ -1215,31 +1227,29 @@ class MainWindow(QMainWindow):
         queue_actions.addWidget(self.retry_failed_btn)
         queue_actions.addWidget(self.clear_finished_btn)
         queue_actions.addStretch(1)
-        card_layout.addLayout(queue_actions)
+        queue_layout.addLayout(queue_actions)
 
-        # Adjustable download options. Fixed MP4 output is intentionally not
-        # rendered as a fake disabled input.
-        options = QHBoxLayout()
-        options.setSpacing(16)
+        body_row.addWidget(queue_panel, 1)
 
-        quality_col = QVBoxLayout()
-        quality_col.setSpacing(8)
+        settings_panel = QFrame()
+        settings_panel.setObjectName("SettingsPanel")
+        settings_panel.setMinimumWidth(286)
+        settings_panel.setMaximumWidth(324)
+        settings_layout = QVBoxLayout(settings_panel)
+        settings_layout.setContentsMargins(16, 16, 16, 16)
+        settings_layout.setSpacing(10)
+
         self.quality_label = self._section_label()
-        quality_col.addWidget(self.quality_label)
         self.quality_combo = QComboBox()
-        quality_col.addWidget(self.quality_combo)
+        settings_layout.addWidget(self.quality_label)
+        settings_layout.addWidget(self.quality_combo)
 
-        playlist_col = QVBoxLayout()
-        playlist_col.setSpacing(8)
         self.playlist_label = self._section_label()
-        playlist_col.addWidget(self.playlist_label)
         self.playlist_combo = QComboBox()
-        playlist_col.addWidget(self.playlist_combo)
+        settings_layout.addWidget(self.playlist_label)
+        settings_layout.addWidget(self.playlist_combo)
 
-        concurrency_col = QVBoxLayout()
-        concurrency_col.setSpacing(8)
         self.concurrency_label = self._section_label()
-        concurrency_col.addWidget(self.concurrency_label)
         self.concurrency_combo = QComboBox()
         for value in (1, 2, 3):
             self.concurrency_combo.addItem("", value)
@@ -1247,34 +1257,31 @@ class MainWindow(QMainWindow):
         saved_concurrency = saved_concurrency if saved_concurrency in (1, 2, 3) else 1
         self.concurrency_combo.setCurrentIndex(saved_concurrency - 1)
         self.concurrency_combo.currentIndexChanged.connect(self.on_concurrency_changed)
-        concurrency_col.addWidget(self.concurrency_combo)
+        settings_layout.addWidget(self.concurrency_label)
+        settings_layout.addWidget(self.concurrency_combo)
 
-        options.addLayout(quality_col, 1)
-        options.addLayout(playlist_col, 1)
-        options.addLayout(concurrency_col, 1)
-        card_layout.addLayout(options)
-
-        # Save location
         self.save_label = self._section_label()
-        card_layout.addWidget(self.save_label)
+        settings_layout.addWidget(self.save_label)
+
         path_row = QHBoxLayout()
-        path_row.setSpacing(10)
+        path_row.setSpacing(8)
         saved_path = self.settings.value("folder", str(Path.home() / "Downloads"))
         self.path_edit = QLineEdit(saved_path)
         self.browse_btn = QPushButton()
         self.browse_btn.setObjectName("Secondary")
-        self.browse_btn.setMinimumWidth(140)
+        self.browse_btn.setMinimumWidth(106)
         self.browse_btn.clicked.connect(self.choose_folder)
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(self.browse_btn)
-        card_layout.addLayout(path_row)
+        settings_layout.addLayout(path_row)
 
-        # Status card
+        settings_layout.addStretch(1)
+
         status_card = QFrame()
         status_card.setObjectName("StatusCard")
         status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(18, 14, 18, 16)
-        status_layout.setSpacing(5)
+        status_layout.setContentsMargins(14, 12, 14, 13)
+        status_layout.setSpacing(4)
 
         self.status_label = QLabel()
         f = QFont("Segoe UI", 11)
@@ -1295,13 +1302,12 @@ class MainWindow(QMainWindow):
 
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.detail_label)
-        status_layout.addSpacing(6)
+        status_layout.addSpacing(4)
         status_layout.addWidget(self.progress)
-        card_layout.addWidget(status_card)
+        settings_layout.addWidget(status_card)
 
-        # Action row
-        action_row = QHBoxLayout()
-        action_row.setSpacing(10)
+        secondary_actions = QHBoxLayout()
+        secondary_actions.setSpacing(8)
         self.open_btn = QPushButton()
         self.open_btn.setObjectName("Ghost")
         self.open_btn.clicked.connect(self.open_folder)
@@ -1309,15 +1315,17 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setObjectName("Ghost")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self.cancel_download)
+        secondary_actions.addWidget(self.open_btn, 1)
+        secondary_actions.addWidget(self.cancel_btn, 1)
+        settings_layout.addLayout(secondary_actions)
+
         self.download_btn = QPushButton()
         self.download_btn.setObjectName("Primary")
-        self.download_btn.setMinimumWidth(170)
         self.download_btn.clicked.connect(self.start_download)
-        action_row.addWidget(self.open_btn)
-        action_row.addWidget(self.cancel_btn)
-        action_row.addItem(QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
-        action_row.addWidget(self.download_btn)
-        card_layout.addLayout(action_row)
+        settings_layout.addWidget(self.download_btn)
+
+        body_row.addWidget(settings_panel)
+        card_layout.addLayout(body_row, 1)
 
         self.note = QLabel()
         self.note.setObjectName("Faint")
