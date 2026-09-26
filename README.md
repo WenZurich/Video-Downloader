@@ -9,6 +9,7 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp), it works with YouTube, Vi
 - **Universal** – paste a link from any supported site, not just YouTube
 - **Download queue** – keep pasting links while downloads are running; new links are appended in order
 - **Failure isolation** – a site/download failure stays on that queue item instead of taking down the app; transient failures get one conservative compatibility retry and can be retried manually
+- **YouTube compatibility fallback** – retryable YouTube failures can switch to the `web_safari` HLS client, then use the same lossless HLS → MP4 remux path
 - **Sequential by default** – one download at a time for predictable bandwidth and stability
 - **Optional concurrency** – switch to 2 or 3 simultaneous downloads when you want more throughput
 - **Quality picker** – best available, or cap at 4K / 1440p / 1080p / 720p / 480p

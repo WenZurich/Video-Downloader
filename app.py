@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Video Downloader"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 ORG_NAME = "WenZurich"
 
 # ---------------------------------------------------------------------------
@@ -542,7 +542,25 @@ class DownloadWorker(QObject):
                 "file_access_retries": 5,
                 "socket_timeout": 30,
             })
+
+            # Current YouTube fallback: web_safari exposes HLS formats that can
+            # avoid some GVS PO-token 403s. Those HLS streams are then finalized
+            # by this app's lossless m3u8 -> MP4 remux path.
+            if self._is_youtube_url(self.url):
+                options["extractor_args"] = {
+                    **options.get("extractor_args", {}),
+                    "youtube": {"player_client": ["web_safari"]},
+                }
         return options
+
+    @staticmethod
+    def _is_youtube_url(url):
+        low = (url or "").lower()
+        return (
+            "youtube.com/" in low
+            or "youtu.be/" in low
+            or "youtube-nocookie.com/" in low
+        )
 
     @staticmethod
     def _is_retryable_error(message):
@@ -563,6 +581,9 @@ class DownloadWorker(QObject):
             "signature extraction",
             "confirm you're not a bot",
             "confirm you’re not a bot",
+            "po token",
+            "proof of origin",
+            "requested format is not available",
         )
         return any(marker in low for marker in retryable_markers)
 
@@ -1488,6 +1509,18 @@ def smoke_test(app):
         "key": "FFmpegVideoRemuxer",
         "preferedformat": "mp4",
     } in opts["postprocessors"]
+
+    yt_worker = DownloadWorker(
+        "https://www.youtube.com/watch?v=nZAHDChkLkk",
+        str(Path.home() / "Downloads"),
+        "Best quality",
+        False,
+        I18n("en"),
+    )
+    yt_fallback = yt_worker._build_options(ffmpeg, compatibility=True)
+    assert yt_fallback["extractor_args"]["youtube"]["player_client"] == ["web_safari"]
+    assert yt_fallback["hls_use_mpegts"] is False
+    assert DownloadWorker._is_retryable_error("PO Token required")
 
     # Test both themes and both languages render without error.
     settings = QSettings(ORG_NAME, APP_NAME + "-SmokeTest")
