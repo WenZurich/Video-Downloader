@@ -1798,7 +1798,7 @@ def smoke_test(app):
         "playlist": False,
         "concurrency": 1,
     }
-    iso.queue_running = True
+    iso.queue_running = False
     iso.add_urls(
         "https://example.com/ci-crash\n"
         "https://example.com/ci-unsupported\n"
@@ -1818,6 +1818,7 @@ def smoke_test(app):
         return request
 
     iso._make_worker_request = ci_request
+    iso.queue_running = True
     iso._pump_queue()
 
     deadline = time.time() + 20
