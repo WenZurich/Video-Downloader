@@ -12,6 +12,7 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp), it works with YouTube, Vi
 - **Optional concurrency** – switch to 2 or 3 simultaneous downloads when you want more throughput
 - **Quality picker** – best available, or cap at 4K / 1440p / 1080p / 720p / 480p
 - **MP4 output** – video and audio merged into a single MP4 via bundled FFmpeg
+- **Lossless HLS/m3u8 remux** – HLS/m3u8 downloads are always finalized as MP4 with stream copy (`-c copy`), so the video/audio are not re-encoded
 - **Playlists** – download a whole playlist in one go, organized into a folder
 - **Themes** – Light, Dark, or follow the system setting
 - **Languages** – 繁體中文 and English, switchable at runtime
@@ -39,6 +40,7 @@ The Windows executable is built on GitHub Actions with a hardened pipeline:
 - Python syntax validation
 - PySide6 offscreen UI smoke test
 - FFmpeg runtime validation
+- Real HLS/m3u8 fixture test that remuxes to MP4 with `-c copy` and verifies the MP4 container
 - yt-dlp Chrome impersonation check
 - Theme (light/dark/system) and language (zh-TW/en) render tests
 - Queue regression tests for multi-link paste, deduplication, ordering, sequential default, and concurrency caps
