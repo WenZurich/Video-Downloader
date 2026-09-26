@@ -1138,33 +1138,49 @@ class MainWindow(QMainWindow):
         url_row.addWidget(self.paste_btn)
         card_layout.addLayout(url_row)
 
-        # Download queue
+        # Download queue — fixed and scrollable so large batches never distort
+        # the controls below it.
         queue_head = QHBoxLayout()
         queue_head.setSpacing(10)
         self.queue_label = self._section_label()
-        self.queue_hint_label = QLabel()
-        self.queue_hint_label.setObjectName("Faint")
         self.queue_count_label = QLabel()
         self.queue_count_label.setObjectName("Muted")
+        self.queue_count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         queue_head.addWidget(self.queue_label)
-        queue_head.addWidget(self.queue_hint_label)
         queue_head.addStretch(1)
         queue_head.addWidget(self.queue_count_label)
         card_layout.addLayout(queue_head)
 
+        self.queue_hint_label = QLabel()
+        self.queue_hint_label.setObjectName("Faint")
+        self.queue_hint_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.queue_hint_label.setMinimumWidth(0)
+        card_layout.addWidget(self.queue_hint_label)
+
         self.queue_tree = QTreeWidget()
         self.queue_tree.setColumnCount(3)
         self.queue_tree.setRootIsDecorated(False)
+        self.queue_tree.setIndentation(0)
         self.queue_tree.setUniformRowHeights(True)
+        self.queue_tree.setAlternatingRowColors(True)
         self.queue_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.queue_tree.setMinimumHeight(160)
-        self.queue_tree.setMaximumHeight(210)
+        self.queue_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.queue_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.queue_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.queue_tree.setTextElideMode(Qt.ElideMiddle)
+        self.queue_tree.setMinimumHeight(188)
+        self.queue_tree.setMaximumHeight(228)
+        self.queue_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.queue_tree.itemSelectionChanged.connect(self._refresh_queue_controls)
+
         header = self.queue_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.resizeSection(0, 104)
+        header.resizeSection(2, 76)
         card_layout.addWidget(self.queue_tree)
 
         queue_actions = QHBoxLayout()
@@ -1179,27 +1195,14 @@ class MainWindow(QMainWindow):
         self.retry_failed_btn.setObjectName("Ghost")
         self.retry_failed_btn.clicked.connect(self.retry_failed_jobs)
 
-        self.concurrency_label = QLabel()
-        self.concurrency_label.setObjectName("Muted")
-        self.concurrency_combo = QComboBox()
-        self.concurrency_combo.setObjectName("Toolbar")
-        self.concurrency_combo.setFixedWidth(132)
-        for value in (1, 2, 3):
-            self.concurrency_combo.addItem("", value)
-        saved_concurrency = int(self.settings.value("concurrency", 1) or 1)
-        saved_concurrency = saved_concurrency if saved_concurrency in (1, 2, 3) else 1
-        self.concurrency_combo.setCurrentIndex(saved_concurrency - 1)
-        self.concurrency_combo.currentIndexChanged.connect(self.on_concurrency_changed)
-
         queue_actions.addWidget(self.remove_btn)
         queue_actions.addWidget(self.retry_failed_btn)
         queue_actions.addWidget(self.clear_finished_btn)
         queue_actions.addStretch(1)
-        queue_actions.addWidget(self.concurrency_label)
-        queue_actions.addWidget(self.concurrency_combo)
         card_layout.addLayout(queue_actions)
 
-        # Quality / format / playlist row
+        # Adjustable download options. Fixed MP4 output is intentionally not
+        # rendered as a fake disabled input.
         options = QHBoxLayout()
         options.setSpacing(16)
 
@@ -1210,14 +1213,6 @@ class MainWindow(QMainWindow):
         self.quality_combo = QComboBox()
         quality_col.addWidget(self.quality_combo)
 
-        format_col = QVBoxLayout()
-        format_col.setSpacing(8)
-        self.format_label = self._section_label()
-        format_col.addWidget(self.format_label)
-        self.format_edit = QLineEdit("MP4")
-        self.format_edit.setReadOnly(True)
-        format_col.addWidget(self.format_edit)
-
         playlist_col = QVBoxLayout()
         playlist_col.setSpacing(8)
         self.playlist_label = self._section_label()
@@ -1225,9 +1220,22 @@ class MainWindow(QMainWindow):
         self.playlist_combo = QComboBox()
         playlist_col.addWidget(self.playlist_combo)
 
+        concurrency_col = QVBoxLayout()
+        concurrency_col.setSpacing(8)
+        self.concurrency_label = self._section_label()
+        concurrency_col.addWidget(self.concurrency_label)
+        self.concurrency_combo = QComboBox()
+        for value in (1, 2, 3):
+            self.concurrency_combo.addItem("", value)
+        saved_concurrency = int(self.settings.value("concurrency", 1) or 1)
+        saved_concurrency = saved_concurrency if saved_concurrency in (1, 2, 3) else 1
+        self.concurrency_combo.setCurrentIndex(saved_concurrency - 1)
+        self.concurrency_combo.currentIndexChanged.connect(self.on_concurrency_changed)
+        concurrency_col.addWidget(self.concurrency_combo)
+
         options.addLayout(quality_col, 1)
-        options.addLayout(format_col, 1)
         options.addLayout(playlist_col, 1)
+        options.addLayout(concurrency_col, 1)
         card_layout.addLayout(options)
 
         # Save location
