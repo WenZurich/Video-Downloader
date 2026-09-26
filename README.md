@@ -8,7 +8,7 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp), it works with YouTube, Vi
 
 - **Universal** – paste a link from any supported site, not just YouTube
 - **Download queue** – keep pasting links while downloads are running; new links are appended in order
-- **Large-queue friendly UI** – the queue stays a fixed, scrollable list with compact URL display and status counts instead of stretching the window
+- **Large-queue friendly UI** – a desktop two-panel layout gives the queue the main canvas while settings/actions stay in a compact side panel; long lists remain scrollable with compact URL display and status counts
 - **Title-aware filenames** – when page/video metadata provides a title, the downloaded MP4 uses a readable Windows-safe title instead of a generic stream name
 - **Process-isolated downloads** – every download runs in a separate OS process; unsupported sites, yt-dlp errors, and even a hard worker crash can fail that row without taking down the GUI
 - **Failure recovery** – transient failures get one conservative compatibility retry, failed rows stay in the queue, and they can be retried manually
