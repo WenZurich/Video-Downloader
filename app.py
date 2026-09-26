@@ -1090,8 +1090,8 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         page = QVBoxLayout(root)
-        page.setContentsMargins(38, 28, 38, 30)
-        page.setSpacing(18)
+        page.setContentsMargins(34, 20, 34, 22)
+        page.setSpacing(14)
 
         # ---- Header: title + toolbar (theme / language) ----
         head = QHBoxLayout()
@@ -1127,8 +1127,8 @@ class MainWindow(QMainWindow):
         card = QFrame()
         card.setObjectName("Card")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(26, 24, 26, 24)
-        card_layout.setSpacing(14)
+        card_layout.setContentsMargins(24, 18, 24, 18)
+        card_layout.setSpacing(12)
 
         self.link_label = self._section_label()
         card_layout.addWidget(self.link_label)
@@ -1196,7 +1196,7 @@ class MainWindow(QMainWindow):
         self.queue_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.queue_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.queue_tree.setTextElideMode(Qt.ElideMiddle)
-        self.queue_tree.setMinimumHeight(300)
+        self.queue_tree.setMinimumHeight(280)
         self.queue_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.queue_tree.itemSelectionChanged.connect(self._refresh_queue_controls)
         self.delete_queue_shortcut = QShortcut(QKeySequence("Delete"), self.queue_tree)
@@ -1237,7 +1237,7 @@ class MainWindow(QMainWindow):
         settings_panel.setMaximumWidth(324)
         settings_layout = QVBoxLayout(settings_panel)
         settings_layout.setContentsMargins(16, 16, 16, 16)
-        settings_layout.setSpacing(10)
+        settings_layout.setSpacing(8)
 
         self.quality_label = self._section_label()
         self.quality_combo = QComboBox()
@@ -1280,7 +1280,7 @@ class MainWindow(QMainWindow):
         status_card = QFrame()
         status_card.setObjectName("StatusCard")
         status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(14, 12, 14, 13)
+        status_layout.setContentsMargins(12, 10, 12, 11)
         status_layout.setSpacing(4)
 
         self.status_label = QLabel()
