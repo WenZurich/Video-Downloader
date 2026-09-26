@@ -937,7 +937,7 @@ class DownloadWorker(QObject):
         state = data.get("status")
         info_dict = data.get("info_dict") or {}
         media_title = _clean_title_text(info_dict.get("title", ""))
-        if media_title:
+        if media_title and not self.media_title:
             self.media_title = media_title
 
         if state == "downloading":
