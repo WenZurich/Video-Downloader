@@ -1,14 +1,18 @@
+import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import threading
+import time
 import traceback
 from pathlib import Path
 
 import imageio_ffmpeg
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
-from PySide6.QtCore import QObject, Qt, QThread, Signal, QSettings, QUrl
+from PySide6.QtCore import QObject, Qt, QProcess, QTimer, Signal, QSettings, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QFileDialog, QFrame,
@@ -18,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Video Downloader"
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.3.0"
 ORG_NAME = "WenZurich"
 
 # ---------------------------------------------------------------------------
@@ -48,6 +52,7 @@ TRANSLATIONS = {
         "retrying": "正在自動重試",
         "retrying_detail": "網站回應異常，切換相容模式後再試一次",
         "unexpected_error": "發生未預期錯誤；程式已攔截錯誤並保留開啟。詳細資訊已寫入錯誤紀錄。",
+        "worker_crashed": "下載工作異常結束，但主程式仍保持開啟。你可以重試此項目。",
         "concurrency": "同時下載",
         "concurrency_1": "1（依序）",
         "concurrency_2": "2",
@@ -133,6 +138,7 @@ TRANSLATIONS = {
         "retrying": "Retrying automatically",
         "retrying_detail": "The site returned an error; retrying once in compatibility mode",
         "unexpected_error": "An unexpected error was caught and the app was kept open. Details were written to the error log.",
+        "worker_crashed": "The download worker exited unexpectedly, but the main app stayed open. You can retry this item.",
         "concurrency": "Concurrent",
         "concurrency_1": "1 (sequential)",
         "concurrency_2": "2",
@@ -684,8 +690,6 @@ class DownloadWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self, settings=None):
         super().__init__()
-        self.thread = None
-        self.worker = None
         self.jobs = []
         self.active_jobs = {}
         self.next_job_id = 1
@@ -1309,52 +1313,141 @@ class MainWindow(QMainWindow):
         elif counts["pending"] == 0:
             self._finish_queue()
 
+    def _make_worker_request(self, job):
+        return {
+            "url": job["url"],
+            "folder": self.run_config["folder"],
+            "quality": self.run_config["quality"],
+            "playlist": self.run_config["playlist"],
+            "language": self.i18n.lang,
+        }
+
+    def _worker_command(self, request_path, state_path):
+        if getattr(sys, "frozen", False):
+            return sys.executable, ["--download-worker", request_path, state_path]
+        return (
+            sys.executable,
+            [str(Path(__file__).resolve()), "--download-worker", request_path, state_path],
+        )
+
     def _start_job(self, job):
         job["status"] = "active"
         job["pct"] = 0.0
         job["error"] = ""
         self._render_job(job)
 
-        thread = QThread(self)
-        worker = DownloadWorker(
-            job["url"],
-            self.run_config["folder"],
-            self.run_config["quality"],
-            self.run_config["playlist"],
-            self.i18n,
-        )
-        worker.moveToThread(thread)
         job_id = job["id"]
+        work_dir = tempfile.mkdtemp(prefix=f"video-downloader-{job_id}-")
+        request_path = str(Path(work_dir) / "request.json")
+        state_path = str(Path(work_dir) / "state.json")
+        _atomic_write_json(request_path, self._make_worker_request(job))
 
-        thread.started.connect(worker.run)
-        worker.progress.connect(
-            lambda pct, title, detail, jid=job_id:
-                self.on_job_progress(jid, pct, title, detail)
+        process = QProcess(self)
+        timer = QTimer(self)
+        timer.setInterval(200)
+
+        program, args = self._worker_command(request_path, state_path)
+        process.setProgram(program)
+        process.setArguments(args)
+
+        self.active_jobs[job_id] = {
+            "process": process,
+            "timer": timer,
+            "tempdir": work_dir,
+            "state_path": state_path,
+            "last_state": None,
+            "finalized": False,
+            "cancel_requested": False,
+        }
+
+        timer.timeout.connect(lambda jid=job_id: self._poll_worker_state(jid))
+        process.finished.connect(
+            lambda code, status, jid=job_id:
+                self._on_worker_process_finished(jid, int(code), status)
         )
-        worker.finished.connect(
-            lambda title, jid=job_id: self.on_job_finished(jid, title)
-        )
-        worker.failed.connect(
-            lambda payload, jid=job_id: self.on_job_failed(jid, payload)
-        )
-        worker.cancelled.connect(
-            lambda jid=job_id: self.on_job_cancelled(jid)
+        process.errorOccurred.connect(
+            lambda error, jid=job_id: self._on_worker_process_error(jid, error)
         )
 
-        for signal in (worker.finished, worker.failed, worker.cancelled):
-            signal.connect(thread.quit)
-            signal.connect(worker.deleteLater)
-
-        thread.finished.connect(
-            lambda jid=job_id: self._on_job_thread_finished(jid)
-        )
-        thread.finished.connect(thread.deleteLater)
-        self.active_jobs[job_id] = {"thread": thread, "worker": worker}
-        thread.start()
+        timer.start()
+        process.start()
         self._refresh_queue_controls()
 
-    def _on_job_thread_finished(self, job_id):
+    def _poll_worker_state(self, job_id):
+        entry = self.active_jobs.get(job_id)
+        if not entry:
+            return
+        path = Path(entry["state_path"])
+        if not path.is_file():
+            return
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        if state == entry.get("last_state"):
+            return
+        entry["last_state"] = state
+
+        if state.get("status") == "progress":
+            self.on_job_progress(
+                job_id,
+                float(state.get("pct", 0.0)),
+                str(state.get("title", "")),
+                str(state.get("detail", "")),
+            )
+
+    def _on_worker_process_error(self, job_id, error):
+        entry = self.active_jobs.get(job_id)
+        if not entry or entry.get("finalized"):
+            return
+        if error == QProcess.ProcessError.FailedToStart:
+            entry["last_state"] = {
+                "status": "failed",
+                "payload": "err_generic|Download worker failed to start.",
+            }
+            self._finalize_worker_job(job_id, -1, QProcess.ExitStatus.CrashExit)
+
+    def _on_worker_process_finished(self, job_id, exit_code, exit_status):
+        self._finalize_worker_job(job_id, exit_code, exit_status)
+
+    def _finalize_worker_job(self, job_id, exit_code, exit_status):
+        entry = self.active_jobs.get(job_id)
+        if not entry or entry.get("finalized"):
+            return
+        entry["finalized"] = True
+        self._poll_worker_state(job_id)
+        state = entry.get("last_state") or {}
+
+        if entry.get("cancel_requested") or self.stop_requested:
+            self.on_job_cancelled(job_id)
+        elif state.get("status") == "done":
+            self.on_job_finished(job_id, str(state.get("title") or "Video"))
+        elif state.get("status") == "failed":
+            self.on_job_failed(
+                job_id,
+                str(state.get("payload") or "err_generic|Download failed."),
+            )
+        elif state.get("status") == "cancelled":
+            self.on_job_cancelled(job_id)
+        else:
+            status_value = getattr(exit_status, "value", exit_status)
+            raw = (
+                f"Download worker exited unexpectedly "
+                f"(exit code {exit_code}, status {status_value})."
+            )
+            self.on_job_failed(job_id, "worker_crashed|" + raw)
+
+        timer = entry.get("timer")
+        process = entry.get("process")
+        if timer:
+            timer.stop()
+            timer.deleteLater()
+        if process:
+            process.deleteLater()
+        shutil.rmtree(entry.get("tempdir", ""), ignore_errors=True)
         self.active_jobs.pop(job_id, None)
+
         if self.queue_running:
             self._pump_queue()
         elif not self.active_jobs:
@@ -1373,7 +1466,18 @@ class MainWindow(QMainWindow):
         self.status_label.setText(self.i18n.tr("cancelling"))
         self.detail_label.setText(self.i18n.tr("cancelling_detail"))
         for entry in list(self.active_jobs.values()):
-            entry["worker"].cancel()
+            entry["cancel_requested"] = True
+            process = entry.get("process")
+            if process and process.state() != QProcess.ProcessState.NotRunning:
+                process.terminate()
+                QTimer.singleShot(
+                    2500,
+                    lambda p=process: (
+                        p.kill()
+                        if p.state() != QProcess.ProcessState.NotRunning
+                        else None
+                    ),
+                )
 
     def on_job_progress(self, job_id, pct, title, detail):
         job = self._find_job(job_id)
@@ -1441,6 +1545,104 @@ class MainWindow(QMainWindow):
                 failed=counts["failed"],
             )
         )
+
+
+def _atomic_write_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def download_worker_main(request_path, state_path):
+    """Run one download in a separate OS process.
+
+    A native crash in yt-dlp/curl_cffi/FFmpeg can terminate this worker, but
+    cannot terminate the Qt GUI process that owns the download queue.
+    """
+    try:
+        request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        _atomic_write_json(
+            state_path,
+            {"status": "failed", "payload": "err_generic|" + str(exc)},
+        )
+        return 2
+
+    test_mode = request.get("_test_mode")
+    if test_mode == "crash":
+        os._exit(23)
+    if test_mode == "unsupported":
+        _atomic_write_json(
+            state_path,
+            {
+                "status": "failed",
+                "payload": "err_unsupported|ERROR: Unsupported URL: test fixture",
+            },
+        )
+        return 2
+    if test_mode == "success":
+        _atomic_write_json(
+            state_path,
+            {"status": "done", "title": "CI worker success"},
+        )
+        return 0
+
+    i18n = I18n(request.get("language", "zh_TW"))
+    worker = DownloadWorker(
+        request["url"],
+        request["folder"],
+        request["quality"],
+        bool(request.get("playlist")),
+        i18n,
+    )
+    terminal = {"status": None}
+
+    def on_progress(pct, title, detail):
+        _atomic_write_json(
+            state_path,
+            {
+                "status": "progress",
+                "pct": float(pct),
+                "title": title,
+                "detail": detail,
+            },
+        )
+
+    def on_finished(title):
+        terminal["status"] = "done"
+        _atomic_write_json(state_path, {"status": "done", "title": title})
+
+    def on_failed(payload):
+        terminal["status"] = "failed"
+        _atomic_write_json(state_path, {"status": "failed", "payload": payload})
+
+    def on_cancelled():
+        terminal["status"] = "cancelled"
+        _atomic_write_json(state_path, {"status": "cancelled"})
+
+    worker.progress.connect(on_progress)
+    worker.finished.connect(on_finished)
+    worker.failed.connect(on_failed)
+    worker.cancelled.connect(on_cancelled)
+
+    try:
+        worker.run()
+    except BaseException as exc:
+        _atomic_write_json(
+            state_path,
+            {
+                "status": "failed",
+                "payload": "err_generic|" + repr(exc),
+            },
+        )
+        return 2
+
+    return 0 if terminal["status"] == "done" else 2
 
 
 def install_exception_hook():
@@ -1584,11 +1786,65 @@ def smoke_test(app):
     assert DownloadWorker._is_retryable_error("HTTP Error 403: Forbidden")
     assert not DownloadWorker._is_retryable_error("This video is private")
 
+    # Real process-isolation regression: a hard child-process crash and an
+    # unsupported URL must fail only those rows and the sequential queue must
+    # continue to the following item while the GUI process remains alive.
+    iso_settings = QSettings(ORG_NAME, APP_NAME + "-IsolationSmokeTest")
+    iso_settings.clear()
+    iso = MainWindow(settings=iso_settings)
+    iso.run_config = {
+        "folder": str(Path.home() / "Downloads"),
+        "quality": "Best quality",
+        "playlist": False,
+        "concurrency": 1,
+    }
+    iso.queue_running = False
+    iso.add_urls(
+        "https://example.com/ci-crash\n"
+        "https://example.com/ci-unsupported\n"
+        "https://example.com/ci-success"
+    )
+
+    original_request = iso._make_worker_request
+
+    def ci_request(job):
+        request = original_request(job)
+        if job["url"].endswith("ci-crash"):
+            request["_test_mode"] = "crash"
+        elif job["url"].endswith("ci-unsupported"):
+            request["_test_mode"] = "unsupported"
+        else:
+            request["_test_mode"] = "success"
+        return request
+
+    iso._make_worker_request = ci_request
+    iso.queue_running = True
+    iso._pump_queue()
+
+    deadline = time.time() + 20
+    while (iso.active_jobs or iso.queue_running) and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+
+    assert not iso.active_jobs
+    assert not iso.queue_running
+    assert [job["status"] for job in iso.jobs] == ["failed", "failed", "done"]
+    assert "unexpectedly" in iso.jobs[0]["error"].lower() or "異常" in iso.jobs[0]["error"]
+    assert "unsupported" in iso.jobs[1]["error"].lower()
+
+    iso.close()
+    iso_settings.clear()
     window.close()
     settings.clear()
 
 
 def main():
+    if "--download-worker" in sys.argv:
+        index = sys.argv.index("--download-worker")
+        if len(sys.argv) <= index + 2:
+            return 2
+        return download_worker_main(sys.argv[index + 1], sys.argv[index + 2])
+
     install_exception_hook()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough

@@ -12,9 +12,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   APP_NAME: "Video Downloader"
-  APP_VERSION: "2.2.2"
+  APP_VERSION: "2.3.0"
 
 jobs:
   build-windows:
@@ -252,7 +256,8 @@ jobs:
           finished = w._find_job(finished_id)
           finished['status'] = 'done'
           finished['pct'] = 100.0
-          w._on_job_thread_finished(finished_id)
+          w.active_jobs.pop(finished_id, None)
+          w._pump_queue()
           assert len(w.active_jobs) == 2
           assert sum(j['status'] == 'pending' for j in w.jobs) == 0
           assert sum(j['status'] == 'done' for j in w.jobs) == 1
@@ -356,18 +361,18 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(2,2,2,0), prodvers=(2,2,2,0), mask=0x3f,
+              filevers=(2,3,0,0), prodvers=(2,3,0,0), mask=0x3f,
               flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)
             ),
             kids=[
               StringFileInfo([StringTable(u'040904B0', [
                 StringStruct(u'CompanyName', u'WenZurich'),
                 StringStruct(u'FileDescription', u'Video Downloader'),
-                StringStruct(u'FileVersion', u'2.2.2'),
+                StringStruct(u'FileVersion', u'2.3.0'),
                 StringStruct(u'InternalName', u'Video Downloader'),
                 StringStruct(u'OriginalFilename', u'Video Downloader.exe'),
                 StringStruct(u'ProductName', u'Video Downloader'),
-                StringStruct(u'ProductVersion', u'2.2.2')
+                StringStruct(u'ProductVersion', u'2.3.0')
               ])]),
               VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
             ]
@@ -430,10 +435,10 @@ jobs:
       - name: Upload portable Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: Video-Downloader-Windows-x64-v2.2.2-portable
+          name: Video-Downloader-Windows-x64-v2.3.0-portable
           path: |
-            dist/Video-Downloader-v2.2.2-Windows-x64-portable.zip
-            dist/Video-Downloader-v2.2.2-Windows-x64-portable.zip.sha256.txt
+            dist/Video-Downloader-v2.3.0-Windows-x64-portable.zip
+            dist/Video-Downloader-v2.3.0-Windows-x64-portable.zip.sha256.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -450,7 +455,9 @@ jobs:
           $notes = @"
           Portable Windows x64 build.
 
-          This release uses a PyInstaller onedir build instead of a self-extracting onefile executable to reduce antivirus/browser heuristic false positives.
+          v2.3.0 runs every download in a separate worker process. Unsupported sites, yt-dlp exceptions, and even a hard worker-process crash are isolated to the affected queue item; the GUI stays alive and continues the queue.
+
+          The build keeps the portable PyInstaller onedir layout to reduce antivirus/browser heuristic false positives.
 
           Extract the ZIP, keep the folder contents together, then run Video Downloader.exe.
 
