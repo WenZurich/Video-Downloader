@@ -14,7 +14,7 @@ permissions:
 
 env:
   APP_NAME: "Video Downloader"
-  APP_VERSION: "2.1.0"
+  APP_VERSION: "2.2.0"
 
 jobs:
   build-windows:
@@ -59,6 +59,77 @@ jobs:
           print('FFmpeg runtime OK:', ffmpeg)
           '@ | Set-Content -Encoding utf8 test_ffmpeg_runtime.py
           python test_ffmpeg_runtime.py
+
+      - name: Test lossless HLS m3u8 to MP4 remux
+        shell: pwsh
+        run: |
+          @'
+          import importlib.util
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          import imageio_ffmpeg
+          from yt_dlp.postprocessor.ffmpeg import FFmpegVideoRemuxerPP
+
+          spec = importlib.util.spec_from_file_location('appmod', 'app.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+          worker = mod.DownloadWorker(
+              'https://example.com/source.m3u8',
+              '.',
+              'Best quality',
+              False,
+              mod.I18n('en'),
+          )
+          opts = worker._build_options(ffmpeg)
+          assert opts['merge_output_format'] == 'mp4'
+          assert opts['hls_use_mpegts'] is False
+          assert opts['fixup'] == 'force'
+          assert {
+              'key': 'FFmpegVideoRemuxer',
+              'preferedformat': 'mp4',
+          } in opts['postprocessors']
+
+          # yt-dlp's remuxer must be stream-copy based, not a video/audio encode.
+          remux_args = list(FFmpegVideoRemuxerPP._options('mp4'))
+          assert 'copy' in remux_args, remux_args
+
+          # End-to-end FFmpeg fixture: create a tiny HLS/m3u8 stream, then
+          # remux it into MP4 with -c copy and verify an MP4 container exists.
+          with tempfile.TemporaryDirectory() as td:
+              td = Path(td)
+              playlist = td / 'source.m3u8'
+              output = td / 'output.mp4'
+
+              subprocess.check_call([
+                  ffmpeg, '-hide_banner', '-loglevel', 'error', '-y',
+                  '-f', 'lavfi', '-i', 'testsrc=size=160x90:rate=10',
+                  '-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=44100',
+                  '-t', '1.2',
+                  '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                  '-c:a', 'aac',
+                  '-f', 'hls', '-hls_time', '0.4', '-hls_list_size', '0',
+                  str(playlist),
+              ])
+              assert playlist.is_file() and playlist.read_text(encoding='utf-8').startswith('#EXTM3U')
+
+              subprocess.check_call([
+                  ffmpeg, '-hide_banner', '-loglevel', 'error', '-y',
+                  '-i', str(playlist),
+                  '-map', '0',
+                  '-c', 'copy',
+                  '-movflags', '+faststart',
+                  str(output),
+              ])
+              assert output.is_file() and output.stat().st_size > 0
+              assert b'ftyp' in output.read_bytes()[:64], 'Output is not an MP4 container'
+
+          print('HLS/m3u8 lossless MP4 remux OK (-c copy)')
+          '@ | Set-Content -Encoding utf8 test_hls_lossless_remux.py
+          python test_hls_lossless_remux.py
 
       - name: Test yt-dlp browser impersonation
         shell: pwsh
@@ -274,18 +345,18 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(2,1,0,0), prodvers=(2,1,0,0), mask=0x3f,
+              filevers=(2,2,0,0), prodvers=(2,2,0,0), mask=0x3f,
               flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)
             ),
             kids=[
               StringFileInfo([StringTable(u'040904B0', [
                 StringStruct(u'CompanyName', u'WenZurich'),
                 StringStruct(u'FileDescription', u'Video Downloader'),
-                StringStruct(u'FileVersion', u'2.1.0'),
+                StringStruct(u'FileVersion', u'2.2.0'),
                 StringStruct(u'InternalName', u'Video Downloader'),
                 StringStruct(u'OriginalFilename', u'Video Downloader.exe'),
                 StringStruct(u'ProductName', u'Video Downloader'),
-                StringStruct(u'ProductVersion', u'2.1.0')
+                StringStruct(u'ProductVersion', u'2.2.0')
               ])]),
               VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
             ]
@@ -338,7 +409,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: Video-Downloader-Windows-x64-v2.1.0
+          name: Video-Downloader-Windows-x64-v2.2.0
           path: |
             dist/Video Downloader.exe
             dist/SHA256.txt
