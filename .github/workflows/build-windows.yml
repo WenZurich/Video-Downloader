@@ -3,7 +3,7 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'feature/**']
+    branches: [main, 'feature/**', 'fix/**']
     paths:
       - 'app.py'
       - 'requirements.txt'
@@ -14,7 +14,7 @@ permissions:
 
 env:
   APP_NAME: "Video Downloader"
-  APP_VERSION: "2.2.0"
+  APP_VERSION: "2.2.1"
 
 jobs:
   build-windows:
@@ -88,6 +88,17 @@ jobs:
           assert opts['merge_output_format'] == 'mp4'
           assert opts['hls_use_mpegts'] is False
           assert opts['fixup'] == 'force'
+
+          yt_worker = mod.DownloadWorker(
+              'https://www.youtube.com/watch?v=nZAHDChkLkk',
+              '.',
+              'Best quality',
+              False,
+              mod.I18n('en'),
+          )
+          yt_fallback = yt_worker._build_options(ffmpeg, compatibility=True)
+          assert yt_fallback['extractor_args']['youtube']['player_client'] == ['web_safari']
+          assert yt_fallback['hls_use_mpegts'] is False
           assert {
               'key': 'FFmpegVideoRemuxer',
               'preferedformat': 'mp4',
@@ -345,18 +356,18 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(2,2,0,0), prodvers=(2,2,0,0), mask=0x3f,
+              filevers=(2,2,1,0), prodvers=(2,2,1,0), mask=0x3f,
               flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)
             ),
             kids=[
               StringFileInfo([StringTable(u'040904B0', [
                 StringStruct(u'CompanyName', u'WenZurich'),
                 StringStruct(u'FileDescription', u'Video Downloader'),
-                StringStruct(u'FileVersion', u'2.2.0'),
+                StringStruct(u'FileVersion', u'2.2.1'),
                 StringStruct(u'InternalName', u'Video Downloader'),
                 StringStruct(u'OriginalFilename', u'Video Downloader.exe'),
                 StringStruct(u'ProductName', u'Video Downloader'),
-                StringStruct(u'ProductVersion', u'2.2.0')
+                StringStruct(u'ProductVersion', u'2.2.1')
               ])]),
               VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
             ]
@@ -409,7 +420,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: Video-Downloader-Windows-x64-v2.2.0
+          name: Video-Downloader-Windows-x64-v2.2.1
           path: |
             dist/Video Downloader.exe
             dist/SHA256.txt
