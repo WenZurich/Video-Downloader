@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import threading
+import traceback
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -43,6 +44,10 @@ TRANSLATIONS = {
         "queue_progress": "進度",
         "remove_selected": "移除選取",
         "clear_finished": "清除已結束",
+        "retry_failed": "重試失敗",
+        "retrying": "正在自動重試",
+        "retrying_detail": "網站回應異常，切換相容模式後再試一次",
+        "unexpected_error": "發生未預期錯誤；程式已攔截錯誤並保留開啟。詳細資訊已寫入錯誤紀錄。",
         "concurrency": "同時下載",
         "concurrency_1": "1（依序）",
         "concurrency_2": "2",
@@ -124,6 +129,10 @@ TRANSLATIONS = {
         "queue_progress": "Progress",
         "remove_selected": "Remove selected",
         "clear_finished": "Clear finished",
+        "retry_failed": "Retry failed",
+        "retrying": "Retrying automatically",
+        "retrying_detail": "The site returned an error; retrying once in compatibility mode",
+        "unexpected_error": "An unexpected error was caught and the app was kept open. Details were written to the error log.",
         "concurrency": "Concurrent",
         "concurrency_1": "1 (sequential)",
         "concurrency_2": "2",
@@ -471,7 +480,7 @@ class DownloadWorker(QObject):
             return "bv*+ba/b"
         return f"bv*[height<={h}]+ba/b[height<={h}]"
 
-    def _build_options(self, ffmpeg_exe):
+    def _build_options(self, ffmpeg_exe, compatibility=False):
         """Build yt-dlp options with a lossless MP4 remux guarantee.
 
         HLS/m3u8 sources can arrive as MPEG-TS or another container. We never
@@ -487,7 +496,7 @@ class DownloadWorker(QObject):
         else:
             outtmpl = os.path.join(self.folder, "%(title)s [%(id)s].%(ext)s")
 
-        return {
+        options = {
             "format": self._format_selector(),
             "format_sort": ["res", "vcodec:h264", "acodec:aac"],
             "merge_output_format": "mp4",
@@ -520,6 +529,41 @@ class DownloadWorker(QObject):
             "quiet": True,
             "no_warnings": True,
         }
+
+        if compatibility:
+            # Conservative fallback for flaky CDNs / anti-bot edges. Keep the
+            # same selected media, but reduce fragment pressure and retry more.
+            options.update({
+                "concurrent_fragment_downloads": 1,
+                "retries": 20,
+                "fragment_retries": 20,
+                "extractor_retries": 5,
+                "file_access_retries": 5,
+                "socket_timeout": 30,
+            })
+        return options
+
+    @staticmethod
+    def _is_retryable_error(message):
+        low = (message or "").lower()
+        retryable_markers = (
+            "http error 403",
+            "http error 429",
+            "too many requests",
+            "temporarily unavailable",
+            "timed out",
+            "timeout",
+            "connection reset",
+            "connection aborted",
+            "remote end closed",
+            "unable to download",
+            "fragment",
+            "nsig",
+            "signature extraction",
+            "confirm you're not a bot",
+            "confirm you’re not a bot",
+        )
+        return any(marker in low for marker in retryable_markers)
 
     def _hook(self, data):
         if self._cancel.is_set():
@@ -564,8 +608,24 @@ class DownloadWorker(QObject):
 
             options = self._build_options(ffmpeg_exe)
 
-            with yt_dlp.YoutubeDL(options) as ydl:
-                info = ydl.extract_info(self.url, download=True)
+            try:
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    info = ydl.extract_info(self.url, download=True)
+            except Exception as first_exc:
+                first_msg = str(first_exc)
+                if self._cancel.is_set() or "USER_CANCELLED" in first_msg:
+                    raise
+                if not self._is_retryable_error(first_msg):
+                    raise
+
+                self.progress.emit(
+                    0.0,
+                    self.i18n.tr("retrying"),
+                    self.i18n.tr("retrying_detail"),
+                )
+                fallback = self._build_options(ffmpeg_exe, compatibility=True)
+                with yt_dlp.YoutubeDL(fallback) as ydl:
+                    info = ydl.extract_info(self.url, download=True)
 
             if self._cancel.is_set():
                 self.cancelled.emit()
@@ -724,6 +784,9 @@ class MainWindow(QMainWindow):
         self.clear_finished_btn = QPushButton()
         self.clear_finished_btn.setObjectName("Ghost")
         self.clear_finished_btn.clicked.connect(self.clear_finished_jobs)
+        self.retry_failed_btn = QPushButton()
+        self.retry_failed_btn.setObjectName("Ghost")
+        self.retry_failed_btn.clicked.connect(self.retry_failed_jobs)
 
         self.concurrency_label = QLabel()
         self.concurrency_label.setObjectName("Muted")
@@ -738,6 +801,7 @@ class MainWindow(QMainWindow):
         self.concurrency_combo.currentIndexChanged.connect(self.on_concurrency_changed)
 
         queue_actions.addWidget(self.remove_btn)
+        queue_actions.addWidget(self.retry_failed_btn)
         queue_actions.addWidget(self.clear_finished_btn)
         queue_actions.addStretch(1)
         queue_actions.addWidget(self.concurrency_label)
@@ -883,6 +947,7 @@ class MainWindow(QMainWindow):
         self.queue_label.setText(tr("queue"))
         self.queue_hint_label.setText(tr("queue_hint"))
         self.remove_btn.setText(tr("remove_selected"))
+        self.retry_failed_btn.setText(tr("retry_failed"))
         self.clear_finished_btn.setText(tr("clear_finished"))
         self.concurrency_label.setText(tr("concurrency"))
         self.concurrency_combo.blockSignals(True)
@@ -1026,6 +1091,9 @@ class MainWindow(QMainWindow):
         self.clear_finished_btn.setEnabled(
             any(job["status"] in ("done", "failed", "cancelled") for job in self.jobs)
         )
+        self.retry_failed_btn.setEnabled(
+            any(job["status"] == "failed" for job in self.jobs)
+        )
         self.download_btn.setEnabled(
             (not self.queue_running)
             and (not self.active_jobs)
@@ -1121,6 +1189,20 @@ class MainWindow(QMainWindow):
                 self.queue_tree.takeTopLevelItem(index)
             self.jobs.remove(job)
         self._refresh_queue_controls()
+
+    def retry_failed_jobs(self):
+        retried = 0
+        for job in self.jobs:
+            if job["status"] != "failed":
+                continue
+            job["status"] = "pending"
+            job["pct"] = 0.0
+            job["error"] = ""
+            self._render_job(job)
+            retried += 1
+        self._refresh_queue_controls()
+        if retried and self.queue_running:
+            self._pump_queue()
 
     def choose_folder(self):
         current = self.path_edit.text().strip() or str(Path.home())
@@ -1339,6 +1421,41 @@ class MainWindow(QMainWindow):
         )
 
 
+def install_exception_hook():
+    """Log unexpected UI exceptions instead of letting them terminate silently."""
+    def handle_exception(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+
+        detail = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+            log_dir = base / ORG_NAME / APP_NAME
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "error.log").open("a", encoding="utf-8") as log:
+                log.write("\n" + "=" * 72 + "\n")
+                log.write(detail)
+        except Exception:
+            pass
+
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                lang = QSettings(ORG_NAME, APP_NAME).value("language", "zh_TW")
+                QMessageBox.critical(
+                    None,
+                    APP_NAME,
+                    I18n(lang).tr("unexpected_error"),
+                )
+                return
+            except Exception:
+                pass
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = handle_exception
+
+
 # ---------------------------------------------------------------------------
 # Smoke test (used by CI) & entry point
 # ---------------------------------------------------------------------------
@@ -1418,11 +1535,26 @@ def smoke_test(app):
     assert len(window.jobs) == 1
     assert window.jobs[0]["url"] == "https://example.com/video-b"
 
+    # Failure isolation regression: a website failure must stay inside its row,
+    # keep the app alive, and be retryable without discarding the queue.
+    failed_job = window.jobs[0]
+    window.on_job_failed(
+        failed_job["id"],
+        "err_generic|HTTP Error 403: Forbidden",
+    )
+    assert failed_job["status"] == "failed"
+    assert window.retry_failed_btn.isEnabled()
+    window.retry_failed_jobs()
+    assert failed_job["status"] == "pending"
+    assert DownloadWorker._is_retryable_error("HTTP Error 403: Forbidden")
+    assert not DownloadWorker._is_retryable_error("This video is private")
+
     window.close()
     settings.clear()
 
 
 def main():
+    install_exception_hook()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
