@@ -631,27 +631,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Sanitize public release notes
-        if: github.ref == 'refs/heads/main'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tag = "v$env:APP_VERSION"
-          gh release view $tag --repo "$env:GITHUB_REPOSITORY" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            $notes = @"
-          Portable Windows x64 build.
-
-          This release improves large-queue usability, compact scrolling behavior, readable title-based filenames, site-specific HLS compatibility, crash-isolated download workers, and the portable Windows package.
-
-          Extract the ZIP, keep the folder contents together, then run Video Downloader.exe.
-
-          The build is not Authenticode-signed yet, so Windows or Chrome may still show an unknown-publisher/reputation warning on some systems.
-          "@
-            gh release edit $tag --repo "$env:GITHUB_REPOSITORY" --title "Video Downloader $tag" --notes $notes
-          }
-
       - name: Publish GitHub Release
         if: github.ref == 'refs/heads/main'
         shell: pwsh
