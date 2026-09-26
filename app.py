@@ -44,8 +44,10 @@ TRANSLATIONS = {
         "paste": "貼上並加入",
         "add_queue": "加入佇列",
         "queue": "下載佇列",
-        "queue_hint": "可持續加入網址；預設依序下載",
+        "queue_hint": "可持續加入網址；清單固定捲動，不影響其他設定",
         "queue_count": "{count} 個項目",
+        "queue_state_summary": "{pending} 等待 · {active} 下載中 · {done} 完成 · {failed} 失敗",
+        "resume_queue": "繼續下載",
         "queue_status": "狀態",
         "queue_item": "項目",
         "queue_progress": "進度",
@@ -134,8 +136,10 @@ TRANSLATIONS = {
         "paste": "Paste & add",
         "add_queue": "Add to queue",
         "queue": "Download queue",
-        "queue_hint": "Keep adding links; downloads run sequentially by default",
+        "queue_hint": "Keep adding links; the queue stays compact and scrollable",
         "queue_count": "{count} items",
+        "queue_state_summary": "{pending} waiting · {active} downloading · {done} done · {failed} failed",
+        "resume_queue": "Resume downloads",
         "queue_status": "Status",
         "queue_item": "Item",
         "queue_progress": "Progress",
@@ -367,9 +371,26 @@ QTreeWidget::item {{
     padding: 3px 6px;
     border-bottom: 1px solid {p['border']};
 }}
+QTreeWidget::item:alternate {{
+    background: {p['surface']};
+}}
 QTreeWidget::item:selected {{
     background: {p['secondary']};
     color: {p['text']};
+}}
+QTreeWidget QScrollBar:vertical {{
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}}
+QTreeWidget QScrollBar::handle:vertical {{
+    background: {p['border_strong']};
+    border-radius: 5px;
+    min-height: 28px;
+}}
+QTreeWidget QScrollBar::add-line:vertical,
+QTreeWidget QScrollBar::sub-line:vertical {{
+    height: 0;
 }}
 QHeaderView::section {{
     background: {p['surface_2']};
