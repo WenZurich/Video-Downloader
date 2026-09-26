@@ -424,7 +424,7 @@ jobs:
 
           assert added == 120 and skipped == 0
           assert w.queue_tree.topLevelItemCount() == 120
-          assert w.queue_tree.maximumHeight() == 228
+          assert w.queue_tree.minimumHeight() >= 300
           assert w.queue_tree.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
           assert w.queue_tree.verticalScrollBar().maximum() > 0
           assert w.width() == 1040
@@ -496,7 +496,7 @@ jobs:
               assert w.path_edit.height() >= 42
               assert w.download_btn.height() >= 42
               assert w.quality_combo.height() >= 42
-              assert w.queue_tree.minimumHeight() >= 188
+              assert w.queue_tree.minimumHeight() >= 300
               assert w.concurrency_combo.count() == 3
               pix = QPixmap(w.size())
               w.render(pix)
