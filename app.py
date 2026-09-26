@@ -16,7 +16,7 @@ import imageio_ffmpeg
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from PySide6.QtCore import QObject, Qt, QProcess, QTimer, Signal, QSettings, QUrl
-from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QFileDialog, QFrame,
     QHeaderView, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -1078,6 +1078,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(1040, 840)
         self.setMinimumSize(880, 720)
+        saved_geometry = self.settings.value("window_geometry")
+        if saved_geometry:
+            self.restoreGeometry(saved_geometry)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -1141,6 +1144,9 @@ class MainWindow(QMainWindow):
         self.paste_btn.setMinimumWidth(126)
         self.paste_btn.clicked.connect(self.paste_url)
 
+        self.focus_url_shortcut = QShortcut(QKeySequence("Ctrl+L"), self)
+        self.focus_url_shortcut.activated.connect(self._focus_url_input)
+
         url_row.addWidget(self.url_edit, 1)
         url_row.addWidget(self.add_btn)
         url_row.addWidget(self.paste_btn)
@@ -1181,6 +1187,8 @@ class MainWindow(QMainWindow):
         self.queue_tree.setMaximumHeight(228)
         self.queue_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.queue_tree.itemSelectionChanged.connect(self._refresh_queue_controls)
+        self.delete_queue_shortcut = QShortcut(QKeySequence("Delete"), self.queue_tree)
+        self.delete_queue_shortcut.activated.connect(self.remove_selected_jobs)
 
         header = self.queue_tree.header()
         header.setStretchLastSection(False)
@@ -1445,6 +1453,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("concurrency", value)
 
     # ---- actions ----
+    def _focus_url_input(self):
+        self.url_edit.setFocus()
+        self.url_edit.selectAll()
+
     def _extract_urls(self, text):
         """Extract HTTP(S) links from clipboard/input while preserving order."""
         if not text:
@@ -1568,6 +1580,12 @@ class MainWindow(QMainWindow):
         existing = {
             job["url"] for job in self.jobs if job["status"] in ("pending", "active")
         }
+        scroll_bar = self.queue_tree.verticalScrollBar()
+        follow_tail = (
+            scroll_bar.maximum() == 0
+            or scroll_bar.value() >= max(0, scroll_bar.maximum() - 24)
+        )
+
         added = 0
         skipped = 0
         last_added_item = None
@@ -1607,7 +1625,7 @@ class MainWindow(QMainWindow):
             self.detail_label.setText(self.i18n.tr("skipped_duplicates", skipped=skipped))
 
         self._refresh_queue_controls()
-        if last_added_item is not None:
+        if last_added_item is not None and follow_tail:
             self.queue_tree.scrollToItem(
                 last_added_item,
                 QAbstractItemView.PositionAtBottom,
@@ -1661,6 +1679,10 @@ class MainWindow(QMainWindow):
         self._refresh_queue_controls()
         if retried and self.queue_running:
             self._pump_queue()
+
+    def closeEvent(self, event):
+        self.settings.setValue("window_geometry", self.saveGeometry())
+        super().closeEvent(event)
 
     def choose_folder(self):
         current = self.path_edit.text().strip() or str(Path.home())
