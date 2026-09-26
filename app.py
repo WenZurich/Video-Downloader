@@ -1264,8 +1264,13 @@ class MainWindow(QMainWindow):
         f = QFont("Segoe UI", 11)
         f.setWeight(QFont.DemiBold)
         self.status_label.setFont(f)
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.status_label.setMinimumWidth(0)
+
         self.detail_label = QLabel()
         self.detail_label.setObjectName("Muted")
+        self.detail_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.detail_label.setMinimumWidth(0)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
@@ -1360,7 +1365,6 @@ class MainWindow(QMainWindow):
             self._render_job(job)
         self._refresh_queue_controls()
         self.quality_label.setText(tr("quality"))
-        self.format_label.setText(tr("output_format"))
         self.playlist_label.setText(tr("playlist"))
         self.save_label.setText(tr("save_location"))
         self.browse_btn.setText(tr("choose_folder"))
@@ -1454,10 +1458,28 @@ class MainWindow(QMainWindow):
             "cancelled": "status_cancelled",
         }.get(status, "status_pending"))
 
+    @staticmethod
+    def _compact_url(url):
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname or url
+            path = (parsed.path or "").rstrip("/")
+            tail = path.rsplit("/", 1)[-1] if path else ""
+            if tail:
+                return f"{host}  ·  {tail}"
+            return host
+        except Exception:
+            return url
+
     def _render_job(self, job):
         item = job["item"]
         item.setText(0, self._status_text(job["status"]))
-        item.setText(1, job["url"])
+
+        display_name = _clean_title_text(job.get("title", ""))
+        if not display_name:
+            display_name = self._compact_url(job["url"])
+        item.setText(1, display_name)
+
         pct = job.get("pct", 0.0)
         if job["status"] == "done":
             item.setText(2, "100%")
@@ -1465,9 +1487,12 @@ class MainWindow(QMainWindow):
             item.setText(2, "—")
         else:
             item.setText(2, f"{pct:.0f}%")
-        item.setToolTip(1, job["url"])
-        if job.get("error"):
-            item.setToolTip(0, job["error"])
+
+        tooltip = job["url"]
+        if job.get("title"):
+            tooltip = job["title"] + "\n" + job["url"]
+        item.setToolTip(1, tooltip)
+        item.setToolTip(0, job.get("error", ""))
 
     def _queue_counts(self):
         counts = {"pending": 0, "active": 0, "done": 0, "failed": 0, "cancelled": 0}
@@ -1481,6 +1506,19 @@ class MainWindow(QMainWindow):
     def _refresh_queue_controls(self):
         counts = self._queue_counts()
         self.queue_count_label.setText(self.i18n.tr("queue_count", count=len(self.jobs)))
+        if self.jobs:
+            self.queue_hint_label.setText(
+                self.i18n.tr(
+                    "queue_state_summary",
+                    pending=counts["pending"],
+                    active=counts["active"],
+                    done=counts["done"],
+                    failed=counts["failed"],
+                )
+            )
+        else:
+            self.queue_hint_label.setText(self.i18n.tr("queue_hint"))
+
         removable = any(
             self._find_job(item.data(0, Qt.UserRole)) is not None
             and self._find_job(item.data(0, Qt.UserRole))["status"] != "active"
@@ -1493,11 +1531,16 @@ class MainWindow(QMainWindow):
         self.retry_failed_btn.setEnabled(
             any(job["status"] == "failed" for job in self.jobs)
         )
-        self.download_btn.setEnabled(
+        can_start = (
             (not self.queue_running)
             and (not self.active_jobs)
             and counts["pending"] > 0
         )
+        self.download_btn.setEnabled(can_start)
+        if can_start and (counts["done"] or counts["failed"] or counts["cancelled"]):
+            self.download_btn.setText(self.i18n.tr("resume_queue"))
+        else:
+            self.download_btn.setText(self.i18n.tr("start_queue"))
         self._update_overall_progress()
 
     def _update_overall_progress(self):
@@ -1519,6 +1562,7 @@ class MainWindow(QMainWindow):
         }
         added = 0
         skipped = 0
+        last_added_item = None
         for url in urls:
             if url in existing:
                 skipped += 1
@@ -1539,6 +1583,7 @@ class MainWindow(QMainWindow):
             self.jobs.append(job)
             self.queue_tree.addTopLevelItem(item)
             self._render_job(job)
+            last_added_item = item
             existing.add(url)
             added += 1
 
@@ -1554,6 +1599,11 @@ class MainWindow(QMainWindow):
             self.detail_label.setText(self.i18n.tr("skipped_duplicates", skipped=skipped))
 
         self._refresh_queue_controls()
+        if last_added_item is not None:
+            self.queue_tree.scrollToItem(
+                last_added_item,
+                QAbstractItemView.PositionAtBottom,
+            )
         if self.queue_running:
             self._pump_queue()
         return added, skipped
