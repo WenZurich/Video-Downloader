@@ -256,7 +256,8 @@ jobs:
           finished = w._find_job(finished_id)
           finished['status'] = 'done'
           finished['pct'] = 100.0
-          w._on_job_thread_finished(finished_id)
+          w.active_jobs.pop(finished_id, None)
+          w._pump_queue()
           assert len(w.active_jobs) == 2
           assert sum(j['status'] == 'pending' for j in w.jobs) == 0
           assert sum(j['status'] == 'done' for j in w.jobs) == 1
