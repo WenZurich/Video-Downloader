@@ -8,6 +8,8 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp), it works with YouTube, Vi
 
 - **Universal** – paste a link from any supported site, not just YouTube
 - **Download queue** – keep pasting links while downloads are running; new links are appended in order
+- **Large-queue friendly UI** – the queue stays a fixed, scrollable list with compact URL display and status counts instead of stretching the window
+- **Title-aware filenames** – when page/video metadata provides a title, the downloaded MP4 uses a readable Windows-safe title instead of a generic stream name
 - **Process-isolated downloads** – every download runs in a separate OS process; unsupported sites, yt-dlp errors, and even a hard worker crash can fail that row without taking down the GUI
 - **Failure recovery** – transient failures get one conservative compatibility retry, failed rows stay in the queue, and they can be retried manually
 - **Portable Windows package** – ships as an `onedir` ZIP instead of a self-extracting `onefile` EXE to reduce browser/antivirus heuristic false positives
@@ -47,7 +49,7 @@ The Windows executable is built on GitHub Actions with a hardened pipeline:
 - Real HLS/m3u8 fixture test that remuxes to MP4 with `-c copy` and verifies the MP4 container
 - yt-dlp Chrome impersonation check
 - Theme (light/dark/system) and language (zh-TW/en) render tests
-- Queue regression tests for multi-link paste, deduplication, ordering, sequential default, concurrency caps, failure retry isolation, hard worker-process crash isolation, and automatic continuation to the next queued item
+- Queue regression tests for multi-link paste, deduplication, ordering, sequential default, concurrency caps, failure retry isolation, hard worker-process crash isolation, automatic continuation, and 120-item layout stability
 - 125% / 150% / 200% HiDPI UI regression tests, with light + dark preview artifacts
 - Windows icon
 - Windows version metadata
