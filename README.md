@@ -8,7 +8,8 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp), it works with YouTube, Vi
 
 - **Universal** – paste a link from any supported site, not just YouTube
 - **Download queue** – keep pasting links while downloads are running; new links are appended in order
-- **Failure isolation** – a site/download failure stays on that queue item instead of taking down the app; transient failures get one conservative compatibility retry and can be retried manually
+- **Process-isolated downloads** – every download runs in a separate OS process; unsupported sites, yt-dlp errors, and even a hard worker crash can fail that row without taking down the GUI
+- **Failure recovery** – transient failures get one conservative compatibility retry, failed rows stay in the queue, and they can be retried manually
 - **Portable Windows package** – ships as an `onedir` ZIP instead of a self-extracting `onefile` EXE to reduce browser/antivirus heuristic false positives
 - **YouTube compatibility fallback** – retryable YouTube failures can switch to the `web_safari` HLS client, then use the same lossless HLS → MP4 remux path
 - **Sequential by default** – one download at a time for predictable bandwidth and stability
@@ -46,7 +47,7 @@ The Windows executable is built on GitHub Actions with a hardened pipeline:
 - Real HLS/m3u8 fixture test that remuxes to MP4 with `-c copy` and verifies the MP4 container
 - yt-dlp Chrome impersonation check
 - Theme (light/dark/system) and language (zh-TW/en) render tests
-- Queue regression tests for multi-link paste, deduplication, ordering, sequential default, concurrency caps, and failure retry isolation
+- Queue regression tests for multi-link paste, deduplication, ordering, sequential default, concurrency caps, failure retry isolation, hard worker-process crash isolation, and automatic continuation to the next queued item
 - 125% / 150% / 200% HiDPI UI regression tests, with light + dark preview artifacts
 - Windows icon
 - Windows version metadata
