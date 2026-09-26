@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   APP_NAME: "Video Downloader"
   APP_VERSION: "2.3.0"
