@@ -12,6 +12,7 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp), it works with YouTube, Vi
 - **Failure recovery** – transient failures get one conservative compatibility retry, failed rows stay in the queue, and they can be retried manually
 - **Portable Windows package** – ships as an `onedir` ZIP instead of a self-extracting `onefile` EXE to reduce browser/antivirus heuristic false positives
 - **YouTube compatibility fallback** – retryable YouTube failures can switch to the `web_safari` HLS client, then use the same lossless HLS → MP4 remux path
+- **MissAV mirror support** – recognizes supported MissAV mirrors such as `missav123.com`, extracts the public HLS/m3u8 player URL with Chrome impersonation, carries the page Referer/session headers into the download, then losslessly remuxes the result to MP4
 - **Sequential by default** – one download at a time for predictable bandwidth and stability
 - **Optional concurrency** – switch to 2 or 3 simultaneous downloads when you want more throughput
 - **Quality picker** – best available, or cap at 4K / 1440p / 1080p / 720p / 480p
@@ -45,6 +46,7 @@ The Windows executable is built on GitHub Actions with a hardened pipeline:
 - PySide6 offscreen UI smoke test
 - FFmpeg runtime validation
 - Real HLS/m3u8 fixture test that remuxes to MP4 with `-c copy` and verifies the MP4 container
+- Live MissAV regression probe against the reported page: resolves its HLS master playlist and fetches bytes from a real media segment using the same browser fingerprint and headers as the app
 - yt-dlp Chrome impersonation check
 - Theme (light/dark/system) and language (zh-TW/en) render tests
 - Queue regression tests for multi-link paste, deduplication, ordering, sequential default, concurrency caps, failure retry isolation, hard worker-process crash isolation, and automatic continuation to the next queued item

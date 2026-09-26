@@ -8,7 +8,9 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlparse
 
+from curl_cffi import requests as browser_requests
 import imageio_ffmpeg
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
@@ -22,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Video Downloader"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 ORG_NAME = "WenZurich"
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,10 @@ TRANSLATIONS = {
         "retry_failed": "重試失敗",
         "retrying": "正在自動重試",
         "retrying_detail": "網站回應異常，切換相容模式後再試一次",
+        "missav_resolving": "正在解析 MissAV 播放器",
+        "missav_resolving_detail": "正在取得公開 HLS / m3u8 串流…",
+        "missav_ready": "已找到 MissAV HLS 串流",
+        "missav_ready_detail": "以瀏覽器指紋與原頁 Referer 開始下載",
         "unexpected_error": "發生未預期錯誤；程式已攔截錯誤並保留開啟。詳細資訊已寫入錯誤紀錄。",
         "worker_crashed": "下載工作異常結束，但主程式仍保持開啟。你可以重試此項目。",
         "concurrency": "同時下載",
@@ -137,6 +143,10 @@ TRANSLATIONS = {
         "retry_failed": "Retry failed",
         "retrying": "Retrying automatically",
         "retrying_detail": "The site returned an error; retrying once in compatibility mode",
+        "missav_resolving": "Resolving MissAV player",
+        "missav_resolving_detail": "Finding the public HLS / m3u8 stream…",
+        "missav_ready": "MissAV HLS stream found",
+        "missav_ready_detail": "Starting with browser impersonation and the page Referer",
         "unexpected_error": "An unexpected error was caught and the app was kept open. Details were written to the error log.",
         "worker_crashed": "The download worker exited unexpectedly, but the main app stayed open. You can retry this item.",
         "concurrency": "Concurrent",
@@ -452,6 +462,203 @@ def resolve_theme(mode):
 
 
 # ---------------------------------------------------------------------------
+# Site-specific resolvers
+# ---------------------------------------------------------------------------
+
+MISSAV_DOMAINS = (
+    "missav123.com",
+    "missav.ai",
+    "missav.ws",
+    "missav.live",
+)
+MISSAV_STREAM_PREFERRED_DOMAINS = ("surrit.com",)
+MISSAV_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+MISSAV_PACKER_RE = re.compile(
+    r"eval\(\s*function\(p,a,c,k,e,d\).*?\}\(\s*"
+    r"(?P<payload>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")\s*,\s*"
+    r"(?P<radix>\d+)\s*,\s*(?P<count>\d+)\s*,\s*"
+    r"(?P<keys>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
+    r"\.split\(\s*['\"]\|['\"]\s*\)",
+    re.DOTALL,
+)
+MISSAV_HLS_RE = re.compile(
+    r"https?://[^\s'\"<>\\;]+\.m3u8(?:\?[^\s'\"<>\\;]*)?",
+    re.IGNORECASE,
+)
+
+
+def _domain_matches(host, domains):
+    host = (host or "").lower().rstrip(".")
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
+
+
+def is_missav_url(url):
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and _domain_matches(
+        parsed.hostname, MISSAV_DOMAINS
+    )
+
+
+def _decode_js_literal(literal):
+    if len(literal) < 2 or literal[0] not in ("'", '"') or literal[-1] != literal[0]:
+        raise ValueError("invalid JavaScript string")
+    text = literal[1:-1]
+    out = []
+    i = 0
+    escapes = {
+        "b": "\b", "f": "\f", "n": "\n", "r": "\r",
+        "t": "\t", "v": "\v", "0": "\0",
+        "\\": "\\", "'": "'", '"': '"',
+    }
+    while i < len(text):
+        ch = text[i]
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        i += 1
+        if i >= len(text):
+            break
+        esc = text[i]
+        if esc == "x" and i + 2 < len(text):
+            out.append(chr(int(text[i + 1:i + 3], 16)))
+            i += 3
+            continue
+        if esc == "u" and i + 4 < len(text):
+            out.append(chr(int(text[i + 1:i + 5], 16)))
+            i += 5
+            continue
+        out.append(escapes.get(esc, esc))
+        i += 1
+    return "".join(out)
+
+
+def _packer_token(number, radix):
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if not 2 <= radix <= len(alphabet):
+        raise ValueError("unsupported packer radix")
+    if number == 0:
+        return "0"
+    digits = []
+    while number:
+        number, remainder = divmod(number, radix)
+        digits.append(alphabet[remainder])
+    return "".join(reversed(digits))
+
+
+def _unpack_missav_scripts(html):
+    payloads = []
+    for match in MISSAV_PACKER_RE.finditer(html):
+        try:
+            payload = _decode_js_literal(match.group("payload"))
+            keys = _decode_js_literal(match.group("keys")).split("|")
+            radix = int(match.group("radix"))
+            count = int(match.group("count"))
+            if count < 0 or count > 10000:
+                continue
+            for value in range(count - 1, -1, -1):
+                token = _packer_token(value, radix)
+                replacement = keys[value] if value < len(keys) and keys[value] else token
+                payload = re.sub(
+                    rf"\b{re.escape(token)}\b",
+                    lambda _match, replacement=replacement: replacement,
+                    payload,
+                )
+            payloads.append(payload)
+        except (ValueError, OverflowError):
+            continue
+    return payloads
+
+
+def extract_missav_hls_urls(html):
+    values = [html.replace("\\/", "/"), *_unpack_missav_scripts(html)]
+    urls = []
+    for value in values:
+        for match in MISSAV_HLS_RE.finditer(value):
+            url = match.group(0).replace("&amp;", "&").replace("\\/", "/")
+            if url not in urls:
+                urls.append(url)
+    return urls
+
+
+def choose_missav_hls_url(urls):
+    if not urls:
+        return None
+
+    def score(url):
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path.lower()
+        preferred = _domain_matches(host, MISSAV_STREAM_PREFERRED_DOMAINS)
+        master = path.endswith("/playlist.m3u8") or "master" in path
+        return (100 if preferred else 0) + (20 if master else 0)
+
+    return max(urls, key=score)
+
+
+def resolve_missav_stream(page_url, timeout=30):
+    """Resolve MissAV's public player page to a browser-authenticated HLS URL."""
+    if not is_missav_url(page_url):
+        raise RuntimeError("MISSAV_UNSUPPORTED_HOST")
+
+    base_headers = {
+        "User-Agent": MISSAV_BROWSER_UA,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    session = browser_requests.Session(impersonate="chrome", headers=base_headers)
+    response = session.get(page_url, timeout=timeout, allow_redirects=True)
+    if response.status_code != 200:
+        raise RuntimeError(f"MISSAV_PAGE_HTTP_{response.status_code}")
+
+    final_url = str(response.url)
+    if not is_missav_url(final_url):
+        raise RuntimeError("MISSAV_REDIRECTED_TO_UNSUPPORTED_HOST")
+
+    urls = extract_missav_hls_urls(response.text)
+    stream_url = choose_missav_hls_url(urls)
+    if not stream_url:
+        raise RuntimeError("MISSAV_STREAM_NOT_FOUND")
+
+    parsed_page = urlparse(final_url)
+    request_headers = {
+        "User-Agent": MISSAV_BROWSER_UA,
+        "Referer": final_url,
+        "Origin": f"{parsed_page.scheme}://{parsed_page.netloc}",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    cookies = session.cookies.get_dict()
+    if cookies:
+        request_headers["Cookie"] = "; ".join(
+            f"{name}={value}" for name, value in cookies.items()
+        )
+
+    probe = session.get(
+        stream_url,
+        headers=request_headers,
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    if probe.status_code != 200:
+        raise RuntimeError(f"MISSAV_HLS_HTTP_{probe.status_code}")
+    if "#EXTM3U" not in probe.text[:8192]:
+        raise RuntimeError("MISSAV_HLS_INVALID_PLAYLIST")
+
+    return {
+        "url": stream_url,
+        "page_url": final_url,
+        "headers": request_headers,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Download worker
 # ---------------------------------------------------------------------------
 
@@ -560,6 +767,10 @@ class DownloadWorker(QObject):
         return options
 
     @staticmethod
+    def _is_missav_url(url):
+        return is_missav_url(url)
+
+    @staticmethod
     def _is_youtube_url(url):
         low = (url or "").lower()
         return (
@@ -634,11 +845,31 @@ class DownloadWorker(QObject):
             if not ffmpeg_exe or not os.path.isfile(ffmpeg_exe):
                 raise RuntimeError(f"Bundled FFmpeg missing: {ffmpeg_exe}")
 
+            download_url = self.url
+            resolved_headers = None
+
+            if self._is_missav_url(self.url):
+                self.progress.emit(
+                    0.0,
+                    self.i18n.tr("missav_resolving"),
+                    self.i18n.tr("missav_resolving_detail"),
+                )
+                resolved = resolve_missav_stream(self.url)
+                download_url = resolved["url"]
+                resolved_headers = resolved["headers"]
+                self.progress.emit(
+                    0.0,
+                    self.i18n.tr("missav_ready"),
+                    self.i18n.tr("missav_ready_detail"),
+                )
+
             options = self._build_options(ffmpeg_exe)
+            if resolved_headers:
+                options["http_headers"] = resolved_headers
 
             try:
                 with yt_dlp.YoutubeDL(options) as ydl:
-                    info = ydl.extract_info(self.url, download=True)
+                    info = ydl.extract_info(download_url, download=True)
             except Exception as first_exc:
                 first_msg = str(first_exc)
                 if self._cancel.is_set() or "USER_CANCELLED" in first_msg:
@@ -652,8 +883,10 @@ class DownloadWorker(QObject):
                     self.i18n.tr("retrying_detail"),
                 )
                 fallback = self._build_options(ffmpeg_exe, compatibility=True)
+                if resolved_headers:
+                    fallback["http_headers"] = resolved_headers
                 with yt_dlp.YoutubeDL(fallback) as ydl:
-                    info = ydl.extract_info(self.url, download=True)
+                    info = ydl.extract_info(download_url, download=True)
 
             if self._cancel.is_set():
                 self.cancelled.emit()
@@ -678,7 +911,13 @@ class DownloadWorker(QObject):
             return "err_drm|" + msg
         if "private" in low or "sign in" in low or "log in" in low or "login" in low:
             return "err_private|" + msg
-        if "unsupported url" in low or "no video" in low or "unable to extract" in low:
+        if (
+            "unsupported url" in low
+            or "no video" in low
+            or "unable to extract" in low
+            or "missav_stream_not_found" in low
+            or "missav_redirected_to_unsupported_host" in low
+        ):
             return "err_unsupported|" + msg
         return "err_generic|" + msg
 

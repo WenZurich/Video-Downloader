@@ -18,7 +18,7 @@ concurrency:
 
 env:
   APP_NAME: "Video Downloader"
-  APP_VERSION: "2.3.0"
+  APP_VERSION: "2.4.0"
 
 jobs:
   build-windows:
@@ -145,6 +145,105 @@ jobs:
           print('HLS/m3u8 lossless MP4 remux OK (-c copy)')
           '@ | Set-Content -Encoding utf8 test_hls_lossless_remux.py
           python test_hls_lossless_remux.py
+
+      - name: Test MissAV resolver fixture
+        shell: pwsh
+        run: |
+          @'
+          import importlib.util
+
+          spec = importlib.util.spec_from_file_location('appmod', 'app.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          assert mod.is_missav_url('https://missav123.com/dm13/fc2-ppv-3482842')
+          assert not mod.is_missav_url('https://example.com/video')
+
+          direct = '<script>const source="https://surrit.com/abc/playlist.m3u8";</script>'
+          assert mod.extract_missav_hls_urls(direct) == [
+              'https://surrit.com/abc/playlist.m3u8'
+          ]
+
+          packed = (
+              "eval(function(p,a,c,k,e,d){return p;}("
+              "'0',10,1,'https://surrit.com/packed/playlist.m3u8'.split('|'),0,{}))"
+          )
+          urls = mod.extract_missav_hls_urls(packed)
+          assert 'https://surrit.com/packed/playlist.m3u8' in urls, urls
+          assert mod.choose_missav_hls_url([
+              'https://cdn.example.com/video.m3u8',
+              'https://surrit.com/preferred/playlist.m3u8',
+          ]) == 'https://surrit.com/preferred/playlist.m3u8'
+
+          print('MissAV resolver fixture OK')
+          '@ | Set-Content -Encoding utf8 test_missav_fixture.py
+          python test_missav_fixture.py
+
+      - name: Live probe MissAV player and HLS
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          @'
+          import importlib.util
+          from urllib.parse import urljoin, urlparse
+
+          from curl_cffi import requests as browser_requests
+
+          spec = importlib.util.spec_from_file_location('appmod', 'app.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          page = 'https://missav123.com/dm13/fc2-ppv-3482842'
+          resolved = mod.resolve_missav_stream(page, timeout=30)
+          parsed = urlparse(resolved['url'])
+          assert parsed.scheme == 'https'
+          assert parsed.path.endswith('.m3u8')
+          assert 'Referer' in resolved['headers']
+
+          # Prove that the CDN is not only exposing the master playlist:
+          # follow one variant and fetch bytes from a real media segment using
+          # the exact browser fingerprint + headers the app passes to yt-dlp.
+          session = browser_requests.Session(
+              impersonate='chrome',
+              headers=resolved['headers'],
+          )
+          master_url = resolved['url']
+          master = session.get(master_url, timeout=30, allow_redirects=True)
+          assert master.status_code == 200 and '#EXTM3U' in master.text
+
+          media_url = master_url
+          media_text = master.text
+          for line in (line.strip() for line in master.text.splitlines()):
+              if line and not line.startswith('#') and '.m3u8' in line:
+                  media_url = urljoin(master_url, line)
+                  variant = session.get(media_url, timeout=30, allow_redirects=True)
+                  assert variant.status_code == 200 and '#EXTM3U' in variant.text
+                  media_text = variant.text
+                  break
+
+          segment = next(
+              (
+                  line.strip()
+                  for line in media_text.splitlines()
+                  if line.strip()
+                  and not line.lstrip().startswith('#')
+                  and '.m3u8' not in line.lower()
+              ),
+              None,
+          )
+          assert segment, 'No media segment found in MissAV HLS playlist'
+          segment_url = urljoin(media_url, segment)
+          segment_response = session.get(
+              segment_url,
+              headers={**resolved['headers'], 'Range': 'bytes=0-4095'},
+              timeout=30,
+              allow_redirects=True,
+          )
+          assert segment_response.status_code in (200, 206), segment_response.status_code
+          assert segment_response.content, 'MissAV media segment returned no bytes'
+          print('MissAV live HLS + media segment probe OK:', parsed.hostname)
+          '@ | Set-Content -Encoding utf8 test_missav_live.py
+          python test_missav_live.py
 
       - name: Test yt-dlp browser impersonation
         shell: pwsh
@@ -361,18 +460,18 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(2,3,0,0), prodvers=(2,3,0,0), mask=0x3f,
+              filevers=(2,4,0,0), prodvers=(2,4,0,0), mask=0x3f,
               flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)
             ),
             kids=[
               StringFileInfo([StringTable(u'040904B0', [
                 StringStruct(u'CompanyName', u'WenZurich'),
                 StringStruct(u'FileDescription', u'Video Downloader'),
-                StringStruct(u'FileVersion', u'2.3.0'),
+                StringStruct(u'FileVersion', u'2.4.0'),
                 StringStruct(u'InternalName', u'Video Downloader'),
                 StringStruct(u'OriginalFilename', u'Video Downloader.exe'),
                 StringStruct(u'ProductName', u'Video Downloader'),
-                StringStruct(u'ProductVersion', u'2.3.0')
+                StringStruct(u'ProductVersion', u'2.4.0')
               ])]),
               VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
             ]
@@ -435,10 +534,10 @@ jobs:
       - name: Upload portable Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: Video-Downloader-Windows-x64-v2.3.0-portable
+          name: Video-Downloader-Windows-x64-v2.4.0-portable
           path: |
-            dist/Video-Downloader-v2.3.0-Windows-x64-portable.zip
-            dist/Video-Downloader-v2.3.0-Windows-x64-portable.zip.sha256.txt
+            dist/Video-Downloader-v2.4.0-Windows-x64-portable.zip
+            dist/Video-Downloader-v2.4.0-Windows-x64-portable.zip.sha256.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -455,7 +554,9 @@ jobs:
           $notes = @"
           Portable Windows x64 build.
 
-          v2.3.0 runs every download in a separate worker process. Unsupported sites, yt-dlp exceptions, and even a hard worker-process crash are isolated to the affected queue item; the GUI stays alive and continues the queue.
+          v2.4.0 adds native MissAV mirror support. MissAV pages are resolved with Chrome impersonation, their public HLS/m3u8 player stream is extracted and probed, and the stream is downloaded through the existing lossless HLS-to-MP4 path.
+
+          Every download still runs in a separate worker process. Unsupported sites, yt-dlp exceptions, and even a hard worker-process crash are isolated to the affected queue item; the GUI stays alive and continues the queue.
 
           The build keeps the portable PyInstaller onedir layout to reduce antivirus/browser heuristic false positives.
 
