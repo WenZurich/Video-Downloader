@@ -52,7 +52,7 @@ TRANSLATIONS = {
         "queue_item": "項目",
         "queue_progress": "進度",
         "remove_selected": "移除選取",
-        "clear_finished": "清除已結束",
+        "clear_finished": "清除完成",
         "retry_failed": "重試失敗",
         "retrying": "正在自動重試",
         "retrying_detail": "網站回應異常，切換相容模式後再試一次",
@@ -144,7 +144,7 @@ TRANSLATIONS = {
         "queue_item": "Item",
         "queue_progress": "Progress",
         "remove_selected": "Remove selected",
-        "clear_finished": "Clear finished",
+        "clear_finished": "Clear completed",
         "retry_failed": "Retry failed",
         "retrying": "Retrying automatically",
         "retrying_detail": "The site returned an error; retrying once in compatibility mode",
@@ -1526,7 +1526,7 @@ class MainWindow(QMainWindow):
         )
         self.remove_btn.setEnabled(removable)
         self.clear_finished_btn.setEnabled(
-            any(job["status"] in ("done", "failed", "cancelled") for job in self.jobs)
+            any(job["status"] == "done" for job in self.jobs)
         )
         self.retry_failed_btn.setEnabled(
             any(job["status"] == "failed" for job in self.jobs)
@@ -1630,8 +1630,9 @@ class MainWindow(QMainWindow):
         self._refresh_queue_controls()
 
     def clear_finished_jobs(self):
+        # Keep failed rows visible so users do not lose retry/error context.
         for job in list(self.jobs):
-            if job["status"] not in ("done", "failed", "cancelled"):
+            if job["status"] != "done":
                 continue
             index = self.queue_tree.indexOfTopLevelItem(job["item"])
             if index >= 0:
