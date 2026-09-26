@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import traceback
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Video Downloader"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 ORG_NAME = "WenZurich"
 
 # ---------------------------------------------------------------------------
@@ -462,6 +463,93 @@ def resolve_theme(mode):
 
 
 # ---------------------------------------------------------------------------
+# Page metadata / output naming
+# ---------------------------------------------------------------------------
+
+class _PageTitleParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.og_title = ""
+        self.twitter_title = ""
+        self.title_parts = []
+        self.h1_parts = []
+        self._in_title = False
+        self._in_h1 = False
+
+    def handle_starttag(self, tag, attrs):
+        name = tag.lower()
+        attrs = {str(k).lower(): (v or "") for k, v in attrs}
+        if name == "meta":
+            key = (attrs.get("property") or attrs.get("name") or "").lower()
+            value = attrs.get("content", "").strip()
+            if key == "og:title" and value and not self.og_title:
+                self.og_title = value
+            elif key == "twitter:title" and value and not self.twitter_title:
+                self.twitter_title = value
+        elif name == "title":
+            self._in_title = True
+        elif name == "h1":
+            self._in_h1 = True
+
+    def handle_endtag(self, tag):
+        name = tag.lower()
+        if name == "title":
+            self._in_title = False
+        elif name == "h1":
+            self._in_h1 = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title_parts.append(data)
+        if self._in_h1:
+            self.h1_parts.append(data)
+
+
+def _clean_title_text(value):
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def extract_page_title(html_text):
+    parser = _PageTitleParser()
+    try:
+        parser.feed(html_text or "")
+    except Exception:
+        return ""
+    candidates = (
+        parser.og_title,
+        parser.twitter_title,
+        " ".join(parser.h1_parts),
+        " ".join(parser.title_parts),
+    )
+    for value in candidates:
+        cleaned = _clean_title_text(value)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def safe_output_title(title, fallback="Video", max_chars=160):
+    """Return a readable Windows-safe filename stem without changing the media."""
+    title = _clean_title_text(title) or fallback
+    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title)
+    title = re.sub(r"\s+", " ", title).strip(" .")
+    if not title:
+        title = fallback
+
+    reserved = {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+    if title.upper() in reserved:
+        title = "_" + title
+
+    if len(title) > max_chars:
+        title = title[:max_chars].rstrip(" .")
+    return title or fallback
+
+
+# ---------------------------------------------------------------------------
 # Site-specific resolvers
 # ---------------------------------------------------------------------------
 
@@ -622,6 +710,8 @@ def resolve_missav_stream(page_url, timeout=30):
     if not is_missav_url(final_url):
         raise RuntimeError("MISSAV_REDIRECTED_TO_UNSUPPORTED_HOST")
 
+    page_title = extract_page_title(response.text)
+
     urls = extract_missav_hls_urls(response.text)
     stream_url = choose_missav_hls_url(urls)
     if not stream_url:
@@ -655,6 +745,7 @@ def resolve_missav_stream(page_url, timeout=30):
         "url": stream_url,
         "page_url": final_url,
         "headers": request_headers,
+        "title": page_title,
     }
 
 
@@ -847,6 +938,7 @@ class DownloadWorker(QObject):
 
             download_url = self.url
             resolved_headers = None
+            resolved_title = ""
 
             if self._is_missav_url(self.url):
                 self.progress.emit(
@@ -857,6 +949,7 @@ class DownloadWorker(QObject):
                 resolved = resolve_missav_stream(self.url)
                 download_url = resolved["url"]
                 resolved_headers = resolved["headers"]
+                resolved_title = _clean_title_text(resolved.get("title", ""))
                 self.progress.emit(
                     0.0,
                     self.i18n.tr("missav_ready"),
@@ -866,6 +959,11 @@ class DownloadWorker(QObject):
             options = self._build_options(ffmpeg_exe)
             if resolved_headers:
                 options["http_headers"] = resolved_headers
+            if resolved_title and not self.playlist:
+                options["outtmpl"] = os.path.join(
+                    self.folder,
+                    safe_output_title(resolved_title) + ".%(ext)s",
+                )
 
             try:
                 with yt_dlp.YoutubeDL(options) as ydl:
@@ -885,6 +983,11 @@ class DownloadWorker(QObject):
                 fallback = self._build_options(ffmpeg_exe, compatibility=True)
                 if resolved_headers:
                     fallback["http_headers"] = resolved_headers
+                if resolved_title and not self.playlist:
+                    fallback["outtmpl"] = os.path.join(
+                        self.folder,
+                        safe_output_title(resolved_title) + ".%(ext)s",
+                    )
                 with yt_dlp.YoutubeDL(fallback) as ydl:
                     info = ydl.extract_info(download_url, download=True)
 
@@ -892,7 +995,9 @@ class DownloadWorker(QObject):
                 self.cancelled.emit()
                 return
 
-            if info and info.get("_type") == "playlist":
+            if resolved_title:
+                title = resolved_title
+            elif info and info.get("_type") == "playlist":
                 title = info.get("title") or "Playlist"
             else:
                 title = (info or {}).get("title") or "Video"
